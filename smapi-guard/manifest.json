@@ -1,0 +1,10 @@
+{
+  "Name": "SiloGuard",
+  "Author": "Cendy",
+  "Version": "0.1.0",
+  "Description": "In-game save slot guard managed by Silo that locks incompatible save files when a profile is mounted.",
+  "UniqueID": "Cendy.SiloGuard",
+  "EntryDll": "SiloGuard.dll",
+  "MinimumApiVersion": "4.0.0",
+  "UpdateKeys": []
+}

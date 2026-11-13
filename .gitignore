@@ -1,0 +1,4 @@
+/target/
+/smapi-guard/obj/
+/smapi-guard/.nuget/
+/smapi-guard/bin/Debug/

@@ -327,7 +327,10 @@ pub fn create_profile_blocking(
         } else {
             format!("{base_name} {index}")
         };
-        if !existing.iter().any(|p| p.name.eq_ignore_ascii_case(&candidate)) {
+        if !existing
+            .iter()
+            .any(|p| p.name.eq_ignore_ascii_case(&candidate))
+        {
             break candidate;
         }
         index += 1;
@@ -362,7 +365,10 @@ pub fn rename_profile_blocking(
     load_snapshot_blocking(
         game_path,
         Some(updated.id),
-        Some(format!("Renamed profile '{}' -> '{}'", old.name, updated.name)),
+        Some(format!(
+            "Renamed profile '{}' -> '{}'",
+            old.name, updated.name
+        )),
     )
 }
 
@@ -506,13 +512,15 @@ pub fn check_nexus_updates_blocking(
     selected_profile_id: Option<i64>,
     status_override: Option<String>,
 ) -> Result<SiloSnapshot> {
-    let mut snapshot = load_snapshot_blocking(game_path, selected_profile_id, status_override.clone())?;
+    let mut snapshot =
+        load_snapshot_blocking(game_path, selected_profile_id, status_override.clone())?;
     let db_path = silo_db_path().context("Could not resolve ~/.silo/silo.db")?;
 
     if !snapshot.all_vault_mods.is_empty() {
         if let Some(api_key) = resolve_nexus_api_key(&db_path) {
             if let Ok(client) = NexusClient::new(&api_key) {
-                let updates = rt_handle.block_on(client.check_mod_updates(&snapshot.all_vault_mods));
+                let updates =
+                    rt_handle.block_on(client.check_mod_updates(&snapshot.all_vault_mods));
                 if !updates.is_empty() && status_override.is_none() {
                     snapshot.status_message = format!(
                         "Found {} mod update(s) available on Nexus Mods",
@@ -610,13 +618,10 @@ pub fn refresh_discovery_feed_blocking(
         );
     } else {
         if let Some(ref cdir) = covers_dir {
-            let _ = rt_handle.block_on(cache_covers_for_mods(
-                &mut snapshot.discoverable_mods,
-                cdir,
-            ));
+            let _ =
+                rt_handle.block_on(cache_covers_for_mods(&mut snapshot.discoverable_mods, cdir));
         }
-        snapshot.status_message =
-            "Synced mod cover thumbnails from Nexus Mods".to_string();
+        snapshot.status_message = "Synced mod cover thumbnails from Nexus Mods".to_string();
     }
 
     Ok(snapshot)

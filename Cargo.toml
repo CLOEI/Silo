@@ -9,7 +9,7 @@ members = [
 [workspace.package]
 version = "0.1.1"
 edition = "2024"
-rust-version = "1.95.0"
+rust-version = "1.98.0"
 authors = ["Cendy"]
 license = "MIT"
 repository = "https://github.com/cloei/silo"
@@ -18,8 +18,17 @@ repository = "https://github.com/cloei/silo"
 silo-core = { path = "crates/silo-core" }
 silo-platform = { path = "crates/silo-platform" }
 
-gpui = { package = "gpui-ce", version = "0.3.0" }
-gpui_platform = { package = "gpui_ce_platform", version = "0.3.0" }
+egui = "0.36.2"
+eframe = { version = "0.36.2", default-features = false, features = ["glow", "wgpu", "wayland", "x11", "default_fonts"] }
+egui_extras = { version = "0.36.2", features = ["file", "image", "svg"] }
+
+fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.17.0" }
+fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.17.0" }
+fastframe-icons = { git = "https://github.com/crmne/fastframe", tag = "v0.17.0" }
+fastframe-titlebar = { git = "https://github.com/crmne/fastframe", tag = "v0.17.0" }
+fastframe-scroll = { git = "https://github.com/crmne/fastframe", tag = "v0.17.0" }
+fastframe-graphics = { git = "https://github.com/crmne/fastframe", tag = "v0.17.0", features = ["wgpu"] }
+fastframe-instance = { git = "https://github.com/crmne/fastframe", tag = "v0.17.0" }
 
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

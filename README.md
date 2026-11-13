@@ -1,6 +1,6 @@
 # Silo
 
-**Silo** is a fast, save-centric Stardew Valley mod and profile manager built with Rust (`gpui-ce`) and a companion SMAPI mod (`SiloGuard`).
+**Silo** is a fast, save-centric Stardew Valley mod and profile manager built with Rust (egui + [fastframe](https://github.com/crmne/fastframe)) and a companion SMAPI mod (`SiloGuard`).
 
 Instead of duplicating mod folders or risking loading a heavily modded save with the wrong mod list, Silo stores mods once in a central vault, links them per save/profile using zero-copy OS junctions/symlinks, and guards your save slots directly inside Stardew Valley.
 
@@ -20,7 +20,7 @@ Instead of duplicating mod folders or risking loading a heavily modded save with
   - Auto-deployed SMAPI companion mod (`Mods/SiloGuard/SiloGuard.dll`) synced with your active Silo profile.
   - **Strict Lock**: Locks incompatible saves on Stardew Valley's Load Game screen so you never accidentally corrupt a save.
   - **Warn Only**: Displays an amber mismatch warning on save slots and asks for confirmation before loading.
-- **Native GPUI Desktop UI**: Clean single-window interface with Light/Dark mode.
+- **Native Desktop UI**: Clean single-window interface with Light/Dark mode.
 
 ---
 
@@ -31,7 +31,7 @@ Silo/
 ├── crates/
 │   ├── silo-core/      # SQLite database, mod vault, save XML parser, SMAPI manifest & Nexus client
 │   ├── silo-platform/  # OS path detection, NTFS junctions / symlinks, SiloGuard deployment, nxm:// IPC
-│   └── silo-ui/        # GPUI desktop application
+│   └── silo-ui/        # egui + fastframe desktop application
 └── smapi-guard/        # C# (.NET 6.0) SiloGuard SMAPI companion mod
 ```
 
@@ -40,7 +40,7 @@ Silo/
 ## Getting Started
 
 ### Prerequisites
-- **Rust** (`1.95+` / Edition 2024)
+- **Rust** (`1.98+` / Edition 2024)
 - **Stardew Valley** with **SMAPI** installed
 - *(Optional, only if modifying `SiloGuard`)* **.NET 6.0 SDK**
 
@@ -71,4 +71,3 @@ dotnet build smapi-guard/SiloGuard.csproj -c Release
 ## AI Disclosure
 
 AI tools were used to accelerate parts of the development process. However, all product decisions, architecture, code reviews, UX direction, and many parts of the implementation are done by a human.
-

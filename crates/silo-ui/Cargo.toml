@@ -1,0 +1,22 @@
+[package]
+name = "silo-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "silo"
+path = "src/main.rs"
+
+[dependencies]
+silo-core.workspace = true
+silo-platform.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true
+tokio.workspace = true
+rfd.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

@@ -123,6 +123,160 @@ impl VaultManager {
         fs::create_dir_all(&staging)?;
         Ok(staging)
     }
+
+    /// Imports an already-extracted mod folder (or multi-mod pack directory) into `~/.silo/vault/`
+    /// by copying each discovered `manifest.json` root into `<UniqueID>_<Version>/` and registering it in SQLite.
+    pub fn import_folder(&self, source_folder: &Path, db: &SiloDatabase) -> Result<Vec<VaultMod>> {
+        let discovered_mods = discover_manifests_in_dir(source_folder)?;
+        if discovered_mods.is_empty() {
+            return Err(SiloError::NoManifestFound(source_folder.to_path_buf()));
+        }
+
+        let mut imported = Vec::with_capacity(discovered_mods.len());
+        let mut sorted_mods = discovered_mods;
+        sorted_mods.sort_by(|a, b| b.0.components().count().cmp(&a.0.components().count()));
+
+        for (mod_source_dir, manifest) in sorted_mods {
+            let vault_rel_path = format!(
+                "{}_{}",
+                sanitize_vault_component(&manifest.unique_id),
+                sanitize_vault_component(&manifest.version)
+            );
+            let target_vault_dir = self.vault_root.join(&vault_rel_path);
+
+            if mod_source_dir != target_vault_dir {
+                if target_vault_dir.exists() {
+                    fs::remove_dir_all(&target_vault_dir)?;
+                }
+                copy_dir_recursive(&mod_source_dir, &target_vault_dir)?;
+            }
+
+            let effective_deps = manifest.effective_dependencies();
+            let nexus_mod_id = manifest.extract_nexus_mod_id();
+
+            let record = db.upsert_mod(
+                &manifest.unique_id,
+                &manifest.name,
+                &manifest.version,
+                nexus_mod_id,
+                None,
+                &vault_rel_path,
+                &effective_deps,
+                &manifest.update_keys,
+            )?;
+
+            imported.push(record);
+        }
+
+        Ok(imported)
+    }
+
+    /// Automatically discovers and adopts:
+    /// 1. Any mod folders already inside `~/.silo/vault/` not yet in SQLite.
+    /// 2. Any pre-existing user mods inside `<Stardew Valley>/Mods/` (excluding `protected_folders`),
+    ///    copying them into `~/.silo/vault/<UniqueID>_<Version>/` and enabling them in `default_profile_id`.
+    pub fn discover_and_adopt_local_mods(
+        &self,
+        game_mods_dir: Option<&Path>,
+        protected_folders: &[&str],
+        db: &SiloDatabase,
+        default_profile_id: Option<i64>,
+    ) -> Result<usize> {
+        let existing_mods = db.list_mods()?;
+        let mut newly_discovered = 0usize;
+
+        // 1. Scan ~/.silo/vault/ for any folders containing manifest.json
+        if self.vault_root.is_dir() {
+            for entry in fs::read_dir(&self.vault_root)? {
+                let entry = entry?;
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let Some(folder_name) = path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                if folder_name.starts_with('.') {
+                    continue;
+                }
+                let manifest_path = path.join("manifest.json");
+                if manifest_path.is_file() {
+                    if let Ok(manifest) = SmapiManifest::from_file(&manifest_path) {
+                        let already_registered = existing_mods.iter().any(|m| {
+                            m.unique_id.eq_ignore_ascii_case(&manifest.unique_id)
+                                && m.version == manifest.version
+                        });
+                        if !already_registered {
+                            let deps = manifest.effective_dependencies();
+                            let nexus_id = manifest.extract_nexus_mod_id();
+                            if let Ok(rec) = db.upsert_mod(
+                                &manifest.unique_id,
+                                &manifest.name,
+                                &manifest.version,
+                                nexus_id,
+                                None,
+                                folder_name,
+                                &deps,
+                                &manifest.update_keys,
+                            ) {
+                                if let Some(pid) = default_profile_id {
+                                    let _ = db.set_mod_enabled(pid, rec.id, true);
+                                }
+                                newly_discovered += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Scan <Stardew Valley>/Mods/ for pre-existing mods installed outside Silo
+        if let Some(mods_dir) = game_mods_dir {
+            if mods_dir.is_dir() {
+                for entry in fs::read_dir(mods_dir)? {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let Some(folder_name) = path.file_name().and_then(|n| n.to_str()) else {
+                        continue;
+                    };
+                    if folder_name.starts_with('.')
+                        || protected_folders
+                            .iter()
+                            .any(|p| p.eq_ignore_ascii_case(folder_name))
+                    {
+                        continue;
+                    }
+
+                    // Discover any manifest.json inside this folder
+                    let Ok(manifests) = discover_manifests_in_dir(&path) else {
+                        continue;
+                    };
+                    for (mod_dir, manifest) in manifests {
+                        let already_in_db = db
+                            .get_mod_by_unique_id_and_version(&manifest.unique_id, &manifest.version)
+                            .is_ok();
+                        if already_in_db {
+                            continue;
+                        }
+
+                        if let Ok(imported) = self.import_folder(&mod_dir, db) {
+                            for rec in imported {
+                                if let Some(pid) = default_profile_id {
+                                    let _ = db.set_mod_enabled(pid, rec.id, true);
+                                }
+                                newly_discovered += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(newly_discovered)
+    }
 }
 
 pub fn extract_archive_to_dir(archive_path: &Path, dest_dir: &Path) -> Result<()> {

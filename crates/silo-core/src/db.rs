@@ -65,7 +65,35 @@ impl SiloDatabase {
                 FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
                 FOREIGN KEY (mod_id) REFERENCES mods(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             "#,
+        )?;
+        Ok(())
+    }
+
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(SiloError::Database)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            r#"
+            INSERT INTO settings (key, value)
+            VALUES (?1, ?2)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            "#,
+            params![key, value],
         )?;
         Ok(())
     }
@@ -306,6 +334,54 @@ impl SiloDatabase {
         Ok(())
     }
 
+    pub fn set_profile_strict_lock(&self, profile_id: i64, strict_lock: bool) -> Result<Profile> {
+        self.conn.execute(
+            "UPDATE profiles SET strict_lock = ?2 WHERE id = ?1",
+            params![profile_id, i32::from(strict_lock)],
+        )?;
+        self.get_profile_by_id(profile_id)
+    }
+
+    pub fn get_global_strict_lock(&self) -> Result<bool> {
+        Ok(self
+            .get_setting("strict_lock")?
+            .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+            .unwrap_or(true))
+    }
+
+    pub fn set_global_strict_lock(&self, strict_lock: bool) -> Result<()> {
+        self.set_setting("strict_lock", if strict_lock { "true" } else { "false" })?;
+        self.conn.execute(
+            "UPDATE profiles SET strict_lock = ?1",
+            params![i32::from(strict_lock)],
+        )?;
+        Ok(())
+    }
+
+    pub fn rename_profile(&self, profile_id: i64, new_name: &str) -> Result<Profile> {
+        let trimmed = new_name.trim();
+        if trimmed.is_empty() {
+            return Err(SiloError::ProfileNotFound(
+                "Profile name cannot be empty".to_string(),
+            ));
+        }
+        self.conn.execute(
+            "UPDATE profiles SET name = ?2 WHERE id = ?1",
+            params![profile_id, trimmed],
+        )?;
+        self.get_profile_by_id(profile_id)
+    }
+
+    pub fn delete_profile(&self, profile_id: i64) -> Result<()> {
+        let affected = self
+            .conn
+            .execute("DELETE FROM profiles WHERE id = ?1", params![profile_id])?;
+        if affected == 0 {
+            return Err(SiloError::ProfileNotFound(profile_id.to_string()));
+        }
+        Ok(())
+    }
+
     pub fn get_profile_mods(&self, profile_id: i64) -> Result<Vec<ProfileModEntry>> {
         let mut stmt = self.conn.prepare(
             r#"
@@ -419,5 +495,13 @@ mod tests {
             db.get_active_profile().unwrap().unwrap().name,
             "Stardew Valley Expanded"
         );
+
+        let renamed = db
+            .rename_profile(expanded_profile.id, "SVE + Ridgeside")
+            .unwrap();
+        assert_eq!(renamed.name, "SVE + Ridgeside");
+
+        db.delete_profile(expanded_profile.id).unwrap();
+        assert_eq!(db.list_profiles().unwrap().len(), 1);
     }
 }

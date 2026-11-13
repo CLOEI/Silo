@@ -33,6 +33,15 @@ pub enum SiloError {
     #[error("Directory walk error: {0}")]
     WalkDir(#[from] walkdir::Error),
 
+    #[error("HTTP request error: {0}")]
+    Http(#[from] reqwest::Error),
+
+    #[error("Invalid NXM URI '{uri}': {reason}")]
+    InvalidNxmUri { uri: String, reason: String },
+
+    #[error("Nexus Mods API error: {0}")]
+    NexusApi(String),
+
     #[error("Invalid semantic version '{version}': {source}")]
     SemVer {
         version: String,

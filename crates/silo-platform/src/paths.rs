@@ -12,6 +12,10 @@ pub fn silo_db_path() -> Option<PathBuf> {
     silo_home_dir().map(|dir| dir.join("silo.db"))
 }
 
+pub fn silo_covers_cache_dir() -> Option<PathBuf> {
+    silo_home_dir().map(|dir| dir.join("cache").join("covers"))
+}
+
 /// Resolves the active Stardew Valley `Saves` directory across Windows, macOS,
 /// native Linux, and Flatpak Steam / Steam Deck.
 ///

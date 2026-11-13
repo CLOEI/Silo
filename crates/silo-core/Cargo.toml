@@ -16,6 +16,8 @@ rusqlite.workspace = true
 zip.workspace = true
 sevenz-rust2.workspace = true
 walkdir.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

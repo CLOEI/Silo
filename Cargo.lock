@@ -1697,6 +1697,7 @@ dependencies = [
  "lebe",
  "miniz_oxide 0.8.9",
  "multiversion",
+ "rayon-core",
  "smallvec",
  "zune-inflate",
 ]
@@ -3166,6 +3167,7 @@ dependencies = [
  "png",
  "qoi",
  "ravif",
+ "rayon",
  "rgb",
  "tiff",
  "zune-core",
@@ -3700,6 +3702,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ea1f30cedd69f0a2954655f7188c6a834246d2bcf1e315e2ac40c4b24dc9519"
 dependencies = [
  "cfg-if",
+ "rayon",
 ]
 
 [[package]]
@@ -5284,6 +5287,7 @@ dependencies = [
  "loop9",
  "quick-error",
  "rav1e",
+ "rayon",
  "rgb",
 ]
 
@@ -5988,6 +5992,7 @@ name = "silo-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "image",
  "json5",
  "quick-xml 0.42.0",
  "reqwest",

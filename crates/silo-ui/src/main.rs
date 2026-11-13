@@ -5,10 +5,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui::{
-    App, Bounds, Context, FocusHandle, FontWeight, KeyDownEvent, ObjectFit, QuitMode, SharedString,
-    Task, TitlebarOptions, UniformListScrollHandle, Window, WindowAppearance, WindowBounds,
-    WindowOptions, colors::Colors, div, green, hsla_to_rgba, img, prelude::*, px, red, rgb, size,
-    uniform_list,
+    App, Bounds, Context, Entity, FocusHandle, FontWeight, KeyDownEvent, ObjectFit, QuitMode,
+    RetainAllImageCache, SharedString, Task, TitlebarOptions, UniformListScrollHandle, Window,
+    WindowAppearance, WindowBounds, WindowOptions, colors::Colors, div, green, hsla_to_rgba, img,
+    prelude::*, px, red, rgb, size, uniform_list,
 };
 use rfd::FileDialog;
 use silo_core::{DependencyIssueKind, paginate_discoverable_mods};
@@ -70,6 +70,8 @@ struct SiloWorkspace {
     cursor_blink_ticks: u8,
     mod_scroll: UniformListScrollHandle,
     discover_scroll: UniformListScrollHandle,
+    discover_image_cache: Entity<RetainAllImageCache>,
+    discover_cache_needs_clear: bool,
     is_busy: bool,
     pending_task: Option<Task<()>>,
     _ipc_poller_task: Option<Task<()>>,
@@ -237,6 +239,8 @@ impl SiloWorkspace {
             cursor_blink_ticks: 0,
             mod_scroll: UniformListScrollHandle::new(),
             discover_scroll: UniformListScrollHandle::new(),
+            discover_image_cache: RetainAllImageCache::new(cx),
+            discover_cache_needs_clear: false,
             is_busy: false,
             pending_task: None,
             _ipc_poller_task: None,
@@ -310,6 +314,26 @@ impl SiloWorkspace {
                 ws.is_busy = false;
                 match join_res {
                     Ok(Ok(new_snapshot)) => {
+                        let page_changed = ws.snapshot.live_nexus_page.as_ref().map(|p| {
+                            (
+                                p.page,
+                                p.mods
+                                    .iter()
+                                    .map(|m| m.nexus_mod_id)
+                                    .collect::<Vec<_>>(),
+                            )
+                        }) != new_snapshot.live_nexus_page.as_ref().map(|p| {
+                            (
+                                p.page,
+                                p.mods
+                                    .iter()
+                                    .map(|m| m.nexus_mod_id)
+                                    .collect::<Vec<_>>(),
+                            )
+                        });
+                        if page_changed || ws.active_tab != ActiveCenterTab::DiscoverMods {
+                            ws.discover_cache_needs_clear = true;
+                        }
                         ws.snapshot = new_snapshot;
                     }
                     Ok(Err(err)) => {
@@ -685,9 +709,20 @@ impl SiloWorkspace {
         );
     }
 
-    fn set_center_tab(&mut self, tab: ActiveCenterTab, cx: &mut Context<Self>) {
+    /// Evicts all decoded Discovery cover images and GPU textures from memory.
+    fn clear_discover_image_cache(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.discover_cache_needs_clear = false;
+        self.discover_image_cache.update(cx, |cache, cx| {
+            cache.clear(window, cx);
+        });
+    }
+
+    fn set_center_tab(&mut self, tab: ActiveCenterTab, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_tab == tab {
             return;
+        }
+        if self.active_tab == ActiveCenterTab::DiscoverMods && tab != ActiveCenterTab::DiscoverMods {
+            self.clear_discover_image_cache(window, cx);
         }
         if tab == ActiveCenterTab::Settings && self.api_key_input.is_empty() {
             self.api_key_input = self.snapshot.nexus_api_key.clone();
@@ -714,7 +749,8 @@ impl SiloWorkspace {
         }
     }
 
-    fn refresh_discovery_feed(&mut self, cx: &mut Context<Self>) {
+    fn refresh_discovery_feed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_discover_image_cache(window, cx);
         self.discovery_page = 1;
         let rt_handle = self.tokio_rt.handle().clone();
         let game_path = self.snapshot.game_install_path.clone();
@@ -726,7 +762,9 @@ impl SiloWorkspace {
         );
     }
 
-    fn fetch_live_nexus_page(&mut self, page: usize, cx: &mut Context<Self>) {
+    fn fetch_live_nexus_page(&mut self, page: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_discover_image_cache(window, cx);
+        self.snapshot.live_nexus_page = None;
         let target_page = page.max(1);
         self.discovery_page = target_page;
         self.discovery_category = "Live Nexus".to_string();
@@ -757,21 +795,28 @@ impl SiloWorkspace {
         );
     }
 
-    fn set_discovery_page(&mut self, page: usize, cx: &mut Context<Self>) {
+    fn set_discovery_page(&mut self, page: usize, window: &mut Window, cx: &mut Context<Self>) {
         let next_page = page.max(1);
         if self.discovery_category == "Live Nexus" {
-            self.fetch_live_nexus_page(next_page, cx);
+            self.fetch_live_nexus_page(next_page, window, cx);
         } else {
+            self.clear_discover_image_cache(window, cx);
             self.discovery_page = next_page;
             cx.notify();
         }
     }
 
-    fn set_discovery_category(&mut self, category: impl Into<String>, cx: &mut Context<Self>) {
+    fn set_discovery_category(
+        &mut self,
+        category: impl Into<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let cat = category.into();
         if cat == "Live Nexus" {
-            self.fetch_live_nexus_page(1, cx);
+            self.fetch_live_nexus_page(1, window, cx);
         } else {
+            self.clear_discover_image_cache(window, cx);
             self.discovery_category = cat;
             self.discovery_page = 1;
             cx.notify();
@@ -805,14 +850,15 @@ impl SiloWorkspace {
             TextKeyOutcome::Submit => {
                 self.discovery_page = 1;
                 if self.discovery_category == "Live Nexus" {
-                    self.fetch_live_nexus_page(1, cx);
+                    self.fetch_live_nexus_page(1, window, cx);
                 } else {
+                    self.clear_discover_image_cache(window, cx);
                     cx.notify();
                 }
             }
             TextKeyOutcome::Cancel => {
                 window.blur(cx);
-                self.clear_discovery_search(cx);
+                self.clear_discovery_search(window, cx);
             }
             TextKeyOutcome::Changed => {
                 self.discovery_page = 1;
@@ -820,8 +866,11 @@ impl SiloWorkspace {
                     && ks.key.eq_ignore_ascii_case("v")
                     && self.discovery_category == "Live Nexus"
                 {
-                    self.fetch_live_nexus_page(1, cx);
+                    self.fetch_live_nexus_page(1, window, cx);
                 } else {
+                    if self.discovery_category != "Live Nexus" {
+                        self.clear_discover_image_cache(window, cx);
+                    }
                     cx.notify();
                 }
             }
@@ -832,13 +881,14 @@ impl SiloWorkspace {
         }
     }
 
-    fn clear_discovery_search(&mut self, cx: &mut Context<Self>) {
+    fn clear_discovery_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.discovery_search.clear();
         self.search_cursor = 0;
         self.discovery_page = 1;
         if self.discovery_category == "Live Nexus" {
-            self.fetch_live_nexus_page(1, cx);
+            self.fetch_live_nexus_page(1, window, cx);
         } else {
+            self.clear_discover_image_cache(window, cx);
             cx.notify();
         }
     }
@@ -1088,11 +1138,11 @@ impl SiloWorkspace {
                                 },
                             ))
                             .child("Settings")
-                            .on_click(cx.listener(|ws, _event, _window, cx| {
+                            .on_click(cx.listener(|ws, _event, window, cx| {
                                 if ws.active_tab == ActiveCenterTab::Settings {
-                                    ws.set_center_tab(ActiveCenterTab::ProfileMods, cx);
+                                    ws.set_center_tab(ActiveCenterTab::ProfileMods, window, cx);
                                 } else {
-                                    ws.set_center_tab(ActiveCenterTab::Settings, cx);
+                                    ws.set_center_tab(ActiveCenterTab::Settings, window, cx);
                                 }
                             })),
                     )
@@ -1945,8 +1995,8 @@ impl SiloWorkspace {
                                             .child(format!(
                                                 "My Profile Mods ({enabled_count}/{total_count})"
                                             ))
-                                            .on_click(cx.listener(|ws, _event, _window, cx| {
-                                                ws.set_center_tab(ActiveCenterTab::ProfileMods, cx);
+                                            .on_click(cx.listener(|ws, _event, window, cx| {
+                                                ws.set_center_tab(ActiveCenterTab::ProfileMods, window, cx);
                                             })),
                                     )
                                     .child(
@@ -1973,9 +2023,10 @@ impl SiloWorkspace {
                                             .child(format!(
                                                 "Discover & Add Mods ({discover_count})"
                                             ))
-                                            .on_click(cx.listener(|ws, _event, _window, cx| {
+                                            .on_click(cx.listener(|ws, _event, window, cx| {
                                                 ws.set_center_tab(
                                                     ActiveCenterTab::DiscoverMods,
+                                                    window,
                                                     cx,
                                                 );
                                             })),
@@ -2076,8 +2127,8 @@ impl SiloWorkspace {
                                 .cursor_pointer()
                                 .hover(|s| s.opacity(0.92))
                                 .child("Browse & Add Mods")
-                                .on_click(cx.listener(|ws, _event, _window, cx| {
-                                    ws.set_center_tab(ActiveCenterTab::DiscoverMods, cx);
+                                .on_click(cx.listener(|ws, _event, window, cx| {
+                                    ws.set_center_tab(ActiveCenterTab::DiscoverMods, window, cx);
                                 })),
                         )
                         .child(
@@ -2331,6 +2382,7 @@ impl SiloWorkspace {
         let weak_ws = cx.weak_entity();
         let has_api_key = self.snapshot.has_nexus_api_key;
         let list_colors = colors.clone();
+        let discover_image_cache = self.discover_image_cache.clone();
 
         let list_el = uniform_list(
             "discover-mods-uniform-list",
@@ -2381,6 +2433,7 @@ impl SiloWorkspace {
                                 .border_color(row_colors.border)
                                 .child(
                                     img(path)
+                                        .image_cache(&discover_image_cache)
                                         .w(px(108.))
                                         .h(px(60.))
                                         .object_fit(ObjectFit::Cover),
@@ -2606,8 +2659,8 @@ impl SiloWorkspace {
                     .cursor_pointer()
                     .hover(|s| s.opacity(0.9))
                     .child(cat_label)
-                    .on_click(cx.listener(move |ws, _event, _window, cx| {
-                        ws.set_discovery_category(cat_key_owned.clone(), cx);
+                    .on_click(cx.listener(move |ws, _event, window, cx| {
+                        ws.set_discovery_category(cat_key_owned.clone(), window, cx);
                     })),
             );
         }
@@ -2708,8 +2761,8 @@ impl SiloWorkspace {
                                     .text_xs()
                                     .cursor_pointer()
                                     .child("Clear")
-                                    .on_click(cx.listener(|ws, _event, _window, cx| {
-                                        ws.clear_discovery_search(cx);
+                                    .on_click(cx.listener(|ws, _event, window, cx| {
+                                        ws.clear_discovery_search(window, cx);
                                     }))
                             }))
                             .child(
@@ -2731,8 +2784,8 @@ impl SiloWorkspace {
                                     .hover(|s| s.bg(colors.separator))
                                     .child(lucide_icon(LUCIDE_REFRESH_CW, 12., colors.text))
                                     .child("Sync Trending")
-                                    .on_click(cx.listener(|ws, _event, _window, cx| {
-                                        ws.refresh_discovery_feed(cx);
+                                    .on_click(cx.listener(|ws, _event, window, cx| {
+                                        ws.refresh_discovery_feed(window, cx);
                                     })),
                             ),
                     ),
@@ -2782,9 +2835,9 @@ impl SiloWorkspace {
                                     .cursor_pointer()
                                     .hover(|s| s.bg(colors.separator))
                                     .child("« First")
-                                    .on_click(cx.listener(move |ws, _event, _window, cx| {
+                                    .on_click(cx.listener(move |ws, _event, window, cx| {
                                         if has_prev {
-                                            ws.set_discovery_page(1, cx);
+                                            ws.set_discovery_page(1, window, cx);
                                         }
                                     })),
                             )
@@ -2807,9 +2860,9 @@ impl SiloWorkspace {
                                     .cursor_pointer()
                                     .hover(|s| s.bg(colors.separator))
                                     .child("‹ Prev Page")
-                                    .on_click(cx.listener(move |ws, _event, _window, cx| {
+                                    .on_click(cx.listener(move |ws, _event, window, cx| {
                                         if has_prev {
-                                            ws.set_discovery_page(prev_page, cx);
+                                            ws.set_discovery_page(prev_page, window, cx);
                                         }
                                     })),
                             )
@@ -2845,9 +2898,9 @@ impl SiloWorkspace {
                                     .cursor_pointer()
                                     .hover(|s| s.bg(colors.separator))
                                     .child("Next Page ›")
-                                    .on_click(cx.listener(move |ws, _event, _window, cx| {
+                                    .on_click(cx.listener(move |ws, _event, window, cx| {
                                         if has_next {
-                                            ws.set_discovery_page(next_page, cx);
+                                            ws.set_discovery_page(next_page, window, cx);
                                         }
                                     })),
                             )
@@ -2869,9 +2922,9 @@ impl SiloWorkspace {
                                     .cursor_pointer()
                                     .hover(|s| s.bg(colors.separator))
                                     .child("Last »")
-                                    .on_click(cx.listener(move |ws, _event, _window, cx| {
+                                    .on_click(cx.listener(move |ws, _event, window, cx| {
                                         if has_next {
-                                            ws.set_discovery_page(total_pages, cx);
+                                            ws.set_discovery_page(total_pages, window, cx);
                                         }
                                     })),
                             ),
@@ -3440,6 +3493,9 @@ impl SiloWorkspace {
 
 impl Render for SiloWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.discover_cache_needs_clear {
+            self.clear_discover_image_cache(window, cx);
+        }
         let colors = self.current_colors();
         let show_footer = !self.snapshot.status_message.trim().is_empty();
 

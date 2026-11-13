@@ -1,7 +1,9 @@
 use std::fs;
-use std::io::Write;
+use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 
+use image::ImageFormat;
+use image::imageops::FilterType;
 use reqwest::Client;
 use reqwest::header::{ACCEPT, HeaderMap, HeaderValue, USER_AGENT};
 use serde::{Deserialize, Serialize};
@@ -594,9 +596,24 @@ struct GraphQlModNode {
     picture_url: Option<String>,
 }
 
+const COVER_THUMB_MAX_W: u32 = 240;
+const COVER_THUMB_MAX_H: u32 = 135;
+
+fn normalize_cover_thumbnail(bytes: &[u8]) -> Option<Vec<u8>> {
+    let decoded = image::load_from_memory(bytes).ok()?;
+    let resized = if decoded.width() > COVER_THUMB_MAX_W || decoded.height() > COVER_THUMB_MAX_H {
+        decoded.resize(COVER_THUMB_MAX_W, COVER_THUMB_MAX_H, FilterType::Triangle)
+    } else {
+        decoded
+    };
+    let mut out = Cursor::new(Vec::new());
+    resized.write_to(&mut out, ImageFormat::Png).ok()?;
+    Some(out.into_inner())
+}
+
 /// Checks if a cover image for `nexus_mod_id` is already cached on disk inside `covers_dir`.
 pub fn find_cached_cover_path(covers_dir: &Path, nexus_mod_id: i64) -> Option<PathBuf> {
-    for ext in ["jpg", "png", "webp", "gif"] {
+    for ext in ["thumb.png", "jpg", "png", "webp", "gif"] {
         let candidate = covers_dir.join(format!("{nexus_mod_id}.{ext}"));
         if candidate.is_file() {
             return Some(candidate);
@@ -612,10 +629,26 @@ pub async fn cache_covers_for_mods(mods: &mut [DiscoverableMod], covers_dir: &Pa
     let _ = fs::create_dir_all(covers_dir);
     let mut newly_cached = 0usize;
 
-    // 1. Attach any already-cached cover files on disk
+    // 1. Attach any already-cached cover files on disk, normalizing legacy full-res/GIF files once
     let mut missing_url_ids = Vec::new();
     for m in mods.iter_mut() {
         if let Some(existing) = find_cached_cover_path(covers_dir, m.nexus_mod_id) {
+            let is_thumb = existing
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".thumb.png"));
+            if !is_thumb {
+                if let Ok(raw) = fs::read(&existing) {
+                    if let Some(thumb_bytes) = normalize_cover_thumbnail(&raw) {
+                        let thumb_path = covers_dir.join(format!("{}.thumb.png", m.nexus_mod_id));
+                        if fs::write(&thumb_path, &thumb_bytes).is_ok() {
+                            let _ = fs::remove_file(&existing);
+                            m.cached_cover_path = Some(thumb_path);
+                            continue;
+                        }
+                    }
+                }
+            }
             m.cached_cover_path = Some(existing);
         } else if m.picture_url.is_none() {
             missing_url_ids.push(m.nexus_mod_id);
@@ -704,21 +737,29 @@ pub async fn cache_covers_for_mods(mods: &mut [DiscoverableMod], covers_dir: &Pa
             continue;
         }
 
-        let lower = pic_url.to_lowercase();
-        let ext = if lower.contains(".png") {
-            "png"
-        } else if lower.contains(".webp") {
-            "webp"
-        } else if lower.contains(".gif") {
-            "gif"
+        if let Some(thumb_bytes) = normalize_cover_thumbnail(&bytes) {
+            let target = covers_dir.join(format!("{}.thumb.png", m.nexus_mod_id));
+            if fs::write(&target, &thumb_bytes).is_ok() {
+                m.cached_cover_path = Some(target);
+                newly_cached += 1;
+            }
         } else {
-            "jpg"
-        };
+            let lower = pic_url.to_lowercase();
+            let ext = if lower.contains(".png") {
+                "png"
+            } else if lower.contains(".webp") {
+                "webp"
+            } else if lower.contains(".gif") {
+                "gif"
+            } else {
+                "jpg"
+            };
 
-        let target = covers_dir.join(format!("{}.{ext}", m.nexus_mod_id));
-        if fs::write(&target, &bytes).is_ok() {
-            m.cached_cover_path = Some(target);
-            newly_cached += 1;
+            let target = covers_dir.join(format!("{}.{ext}", m.nexus_mod_id));
+            if fs::write(&target, &bytes).is_ok() {
+                m.cached_cover_path = Some(target);
+                newly_cached += 1;
+            }
         }
     }
 
@@ -1216,5 +1257,21 @@ mod tests {
         assert_eq!(parsed.key.as_deref(), Some("abc123xyz"));
         assert_eq!(parsed.expires, Some(1794580000));
         assert_eq!(parsed.user_id, Some(42));
+    }
+
+    #[test]
+    fn normalizes_oversized_cover_to_thumbnail_png() {
+        let img = image::RgbaImage::new(1920, 1080);
+        let mut raw = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut raw, ImageFormat::Png)
+            .unwrap();
+
+        let normalized = normalize_cover_thumbnail(raw.get_ref()).unwrap();
+        let decoded = image::load_from_memory(&normalized).unwrap();
+        assert!(decoded.width() <= COVER_THUMB_MAX_W);
+        assert!(decoded.height() <= COVER_THUMB_MAX_H);
+        assert_eq!(decoded.width(), COVER_THUMB_MAX_W);
+        assert_eq!(decoded.height(), COVER_THUMB_MAX_H);
     }
 }

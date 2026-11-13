@@ -30,6 +30,20 @@ fn main() {
     let (nxm_tx, nxm_rx) = std::sync::mpsc::channel::<String>();
     let waker: Arc<OnceLock<egui::Context>> = Arc::new(OnceLock::new());
 
+    #[cfg(target_os = "macos")]
+    {
+        let tx = nxm_tx.clone();
+        let waker = waker.clone();
+        if let Err(err) = silo_platform::install_macos_url_handler(move |url| {
+            let _ = tx.send(url);
+            if let Some(ctx) = waker.get() {
+                ctx.request_repaint();
+            }
+        }) {
+            tracing::warn!(%err, "Could not install the macOS nxm:// event handler");
+        }
+    }
+
     let claim = Slot::new("com.cendy.silo").claim(&request, {
         let nxm_tx = nxm_tx.clone();
         let waker = waker.clone();

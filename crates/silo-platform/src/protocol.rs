@@ -4,6 +4,18 @@ use std::io;
 use std::path::Path;
 use std::process::Command;
 
+#[cfg(target_os = "macos")]
+use std::path::PathBuf;
+
+#[cfg(target_os = "macos")]
+use objc2::rc::Retained;
+#[cfg(target_os = "macos")]
+use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
+#[cfg(target_os = "macos")]
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+#[cfg(target_os = "macos")]
+use objc2_foundation::{NSAppleEventDescriptor, NSAppleEventManager};
+
 use tracing::info;
 
 /// Registers the `nxm://` URI scheme handler for the current user so clicking
@@ -13,10 +25,10 @@ use tracing::info;
 ///   (no Administrator privileges required).
 /// - **Linux**: Writes `~/.local/share/applications/silo-nxm.desktop` and registers it via
 ///   `xdg-mime default silo-nxm.desktop x-scheme-handler/nxm`.
-/// - **macOS**: Builds a tiny registered `SiloNxmHandler.app` in `~/Applications` that
-///   declares `CFBundleURLTypes` for `nxm`, and makes it the default handler. The applet
-///   launches this executable with the URL as its argument, so a running Silo receives it
-///   through the single-instance channel and a stopped one starts with it.
+/// - **macOS**: When running inside a `.app` bundle, registers the bundle's `nxm` URL type
+///   and installs an Apple Event handler so LaunchServices delivers links to the running app.
+///   Unbundled development builds create a tiny `SiloNxmHandler.app` trampoline in
+///   `~/Applications` instead.
 pub fn register_nxm_protocol_handler(exe_path: &Path) -> io::Result<()> {
     #[cfg(target_os = "windows")]
     {
@@ -152,6 +164,23 @@ fn register_nxm_macos(exe_path: &Path) -> io::Result<()> {
         .unwrap_or_else(|_| exe_path.to_path_buf());
     let home = dirs::home_dir()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Home directory not found"))?;
+
+    if let Some(bundle) = enclosing_app_bundle(&exe_path) {
+        let _ = Command::new(LSREGISTER).arg("-f").arg(&bundle).status();
+        set_default_url_handler("nxm", "com.cendy.silo")?;
+
+        // Remove the trampoline used by unbundled development builds.
+        let support_dir = home
+            .join("Library")
+            .join("Application Support")
+            .join("Silo");
+        let _ = fs::remove_dir_all(home.join("Applications").join(NXM_HANDLER_APP_NAME));
+        let _ = fs::remove_file(support_dir.join("nxm-handler-exe"));
+
+        info!(bundle = %bundle.display(), "Registered macOS nxm:// URL handler bundle");
+        return Ok(());
+    }
+
     let apps_dir = home.join("Applications");
     fs::create_dir_all(&apps_dir)?;
 
@@ -281,6 +310,89 @@ fn set_default_url_handler(scheme: &str, bundle_id: &str) -> io::Result<()> {
             "LSSetDefaultHandlerForURLScheme returned {status}"
         )))
     }
+}
+
+#[cfg(target_os = "macos")]
+fn enclosing_app_bundle(exe_path: &Path) -> Option<PathBuf> {
+    exe_path
+        .ancestors()
+        .find(|path| path.extension().and_then(|ext| ext.to_str()) == Some("app"))
+        .map(Path::to_path_buf)
+}
+
+#[cfg(target_os = "macos")]
+const DIRECT_OBJECT: u32 = 0x2D2D_2D2D; // '----'
+
+#[cfg(target_os = "macos")]
+struct UrlHandlerIvars {
+    on_url: Box<dyn Fn(String) + Send + 'static>,
+}
+
+#[cfg(target_os = "macos")]
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "SiloNxmUrlHandler"]
+    #[ivars = UrlHandlerIvars]
+    struct NxmUrlHandler;
+
+    unsafe impl NSObjectProtocol for NxmUrlHandler {}
+
+    impl NxmUrlHandler {
+        #[unsafe(method(handleGetURLEvent:withReplyEvent:))]
+        fn handle_get_url(
+            &self,
+            event: &NSAppleEventDescriptor,
+            _reply: &NSAppleEventDescriptor,
+        ) {
+            let Some(descriptor) = event.paramDescriptorForKeyword(DIRECT_OBJECT) else {
+                return;
+            };
+            let Some(url) = descriptor.stringValue() else {
+                return;
+            };
+            (self.ivars().on_url)(url.to_string());
+        }
+    }
+);
+
+#[cfg(target_os = "macos")]
+impl NxmUrlHandler {
+    fn new(on_url: Box<dyn Fn(String) + Send + 'static>, mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>().set_ivars(UrlHandlerIvars { on_url });
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn as_any_object<T>(object: &T) -> &AnyObject {
+    unsafe { &*(object as *const T as *const AnyObject) }
+}
+
+/// Installs the handler that receives `nxm://` URLs delivered by LaunchServices.
+/// Must be called from the main thread before the event loop starts.
+#[cfg(target_os = "macos")]
+pub fn install_macos_url_handler(on_url: impl Fn(String) + Send + 'static) -> io::Result<()> {
+    const INTERNET_EVENT_CLASS: u32 = 0x4755_524C; // 'GURL'
+    const GET_URL_EVENT: u32 = 0x4755_524C; // 'GURL'
+
+    let mtm = MainThreadMarker::new()
+        .ok_or_else(|| io::Error::other("the URL handler must be installed on the main thread"))?;
+    let handler = NxmUrlHandler::new(Box::new(on_url), mtm);
+
+    unsafe {
+        NSAppleEventManager::sharedAppleEventManager()
+            .setEventHandler_andSelector_forEventClass_andEventID(
+                as_any_object(&*handler),
+                sel!(handleGetURLEvent:withReplyEvent:),
+                INTERNET_EVENT_CLASS,
+                GET_URL_EVENT,
+            );
+    }
+
+    // The event manager does not retain the handler.
+    std::mem::forget(handler);
+    Ok(())
 }
 
 /// Generates the macOS `Info.plist` `CFBundleURLTypes` XML snippet for `nxm://` support.

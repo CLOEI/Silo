@@ -18,6 +18,8 @@ pub use paths::{
     candidate_saves_paths, resolve_saves_path, silo_covers_cache_dir, silo_db_path, silo_home_dir,
     silo_vault_dir,
 };
+#[cfg(target_os = "macos")]
+pub use protocol::install_macos_url_handler;
 pub use protocol::{macos_info_plist_url_types_snippet, register_nxm_protocol_handler};
 pub use steam::{
     detect_stardew_install_path, is_valid_stardew_install_dir, parse_steam_library_folders,

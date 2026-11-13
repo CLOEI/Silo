@@ -28,7 +28,7 @@ jobs:
             target: aarch64-apple-darwin
             bin_name: silo
             artifact_name: silo-macos-aarch64
-            archive_ext: tar.gz
+            archive_ext: zip
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             bin_name: silo
@@ -78,7 +78,7 @@ jobs:
         run: cargo build --release -p silo-ui --target ${{ matrix.target }}
 
       - name: Package archive (Windows)
-        if: matrix.archive_ext == 'zip'
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
@@ -86,8 +86,16 @@ jobs:
           Copy-Item "README.md" "dist/README.md"
           Compress-Archive -Path "dist/*" -DestinationPath "${{ matrix.artifact_name }}.zip" -Force
 
-      - name: Package archive (macOS & Linux)
-        if: matrix.archive_ext == 'tar.gz'
+      - name: Package macOS app bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}" bash scripts/bundle-macos.sh \
+            "target/${{ matrix.target }}/release/${{ matrix.bin_name }}" dist
+          ditto -c -k --keepParent "dist/Silo.app" "${{ matrix.artifact_name }}.zip"
+
+      - name: Package archive (Linux)
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           mkdir -p dist

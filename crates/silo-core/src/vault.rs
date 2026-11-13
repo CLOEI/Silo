@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -9,7 +10,7 @@ use zip::ZipArchive;
 
 use crate::db::SiloDatabase;
 use crate::error::{Result, SiloError};
-use crate::manifest::SmapiManifest;
+use crate::manifest::{SmapiManifest, compare_smapi_versions};
 use crate::models::VaultMod;
 
 pub struct VaultManager {
@@ -88,7 +89,7 @@ impl VaultManager {
             let effective_deps = manifest.effective_dependencies();
             let nexus_mod_id = nexus_mod_id_hint.or_else(|| manifest.extract_nexus_mod_id());
 
-            let record = db.upsert_mod(
+            let (record, superseded_paths) = db.upsert_or_replace_mod(
                 &manifest.unique_id,
                 &manifest.name,
                 &manifest.version,
@@ -98,6 +99,8 @@ impl VaultManager {
                 &effective_deps,
                 &manifest.update_keys,
             )?;
+
+            self.remove_superseded_vault_dirs(&superseded_paths, &vault_rel_path);
 
             info!(
                 unique_id = %record.unique_id,
@@ -110,6 +113,18 @@ impl VaultManager {
         }
 
         Ok(imported)
+    }
+
+    fn remove_superseded_vault_dirs(&self, superseded_rel_paths: &[String], keep_rel_path: &str) {
+        for old_rel in superseded_rel_paths {
+            if old_rel == keep_rel_path || old_rel.trim().is_empty() {
+                continue;
+            }
+            let old_dir = self.vault_root.join(old_rel);
+            if old_dir.is_dir() {
+                let _ = fs::remove_dir_all(&old_dir);
+            }
+        }
     }
 
     fn create_staging_dir(&self) -> Result<PathBuf> {
@@ -154,7 +169,7 @@ impl VaultManager {
             let effective_deps = manifest.effective_dependencies();
             let nexus_mod_id = manifest.extract_nexus_mod_id();
 
-            let record = db.upsert_mod(
+            let (record, superseded_paths) = db.upsert_or_replace_mod(
                 &manifest.unique_id,
                 &manifest.name,
                 &manifest.version,
@@ -165,6 +180,8 @@ impl VaultManager {
                 &manifest.update_keys,
             )?;
 
+            self.remove_superseded_vault_dirs(&superseded_paths, &vault_rel_path);
+
             imported.push(record);
         }
 
@@ -172,9 +189,10 @@ impl VaultManager {
     }
 
     /// Automatically discovers and adopts:
-    /// 1. Any mod folders already inside `~/.silo/vault/` not yet in SQLite.
+    /// 1. Any mod folders already inside `~/.silo/vault/` not yet in SQLite (or newer than DB),
+    ///    while deduplicating any legacy duplicate version rows and stale vault folders.
     /// 2. Any pre-existing user mods inside `<Stardew Valley>/Mods/` (excluding `protected_folders`),
-    ///    copying them into `~/.silo/vault/<UniqueID>_<Version>/` and enabling them in `default_profile_id`.
+    ///    copying them into `~/.silo/vault/<UniqueID>_<Version>/` if missing or strictly newer than DB.
     pub fn discover_and_adopt_local_mods(
         &self,
         game_mods_dir: Option<&Path>,
@@ -182,11 +200,23 @@ impl VaultManager {
         db: &SiloDatabase,
         default_profile_id: Option<i64>,
     ) -> Result<usize> {
-        let existing_mods = db.list_mods()?;
+        if let Ok(stale_paths) = db.deduplicate_mods() {
+            for rel in &stale_paths {
+                let old_dir = self.vault_root.join(rel);
+                if old_dir.is_dir() {
+                    let _ = fs::remove_dir_all(&old_dir);
+                }
+            }
+        }
+
         let mut newly_discovered = 0usize;
 
-        // 1. Scan ~/.silo/vault/ for any folders containing manifest.json
+        // 1. Scan ~/.silo/vault/ for any folders containing manifest.json,
+        // grouping by lowercase UniqueID and keeping only the highest version per mod.
         if self.vault_root.is_dir() {
+            let mut best_by_id: HashMap<String, (String, SmapiManifest)> = HashMap::new();
+            let mut all_vault_folders: Vec<(String, SmapiManifest)> = Vec::new();
+
             for entry in fs::read_dir(&self.vault_root)? {
                 let entry = entry?;
                 let path = entry.path();
@@ -202,26 +232,69 @@ impl VaultManager {
                 let manifest_path = path.join("manifest.json");
                 if manifest_path.is_file() {
                     if let Ok(manifest) = SmapiManifest::from_file(&manifest_path) {
-                        let already_registered = existing_mods.iter().any(|m| {
-                            m.unique_id.eq_ignore_ascii_case(&manifest.unique_id)
-                                && m.version == manifest.version
-                        });
-                        if !already_registered {
-                            let deps = manifest.effective_dependencies();
-                            let nexus_id = manifest.extract_nexus_mod_id();
-                            if let Ok(rec) = db.upsert_mod(
+                        let key = manifest.unique_id.to_ascii_lowercase();
+                        let replace = match best_by_id.get(&key) {
+                            Some((_best_folder, best_manifest)) => {
+                                compare_smapi_versions(&manifest.version, &best_manifest.version)
+                                    == std::cmp::Ordering::Greater
+                            }
+                            None => true,
+                        };
+                        if replace {
+                            best_by_id.insert(key, (folder_name.to_string(), manifest.clone()));
+                        }
+                        all_vault_folders.push((folder_name.to_string(), manifest));
+                    }
+                }
+            }
+
+            // Remove duplicate older folders in ~/.silo/vault/ when a newer version folder exists
+            for (folder_name, manifest) in all_vault_folders {
+                let key = manifest.unique_id.to_ascii_lowercase();
+                if let Some((best_folder, _)) = best_by_id.get(&key) {
+                    if folder_name != *best_folder {
+                        let _ = fs::remove_dir_all(self.vault_root.join(&folder_name));
+                    }
+                }
+            }
+
+            for (_key, (folder_name, manifest)) in best_by_id {
+                let deps = manifest.effective_dependencies();
+                let nexus_id = manifest.extract_nexus_mod_id();
+
+                match db.find_mod_by_unique_id(&manifest.unique_id)? {
+                    None => {
+                        if let Ok(rec) = db.upsert_mod(
+                            &manifest.unique_id,
+                            &manifest.name,
+                            &manifest.version,
+                            nexus_id,
+                            None,
+                            &folder_name,
+                            &deps,
+                            &manifest.update_keys,
+                        ) {
+                            if let Some(pid) = default_profile_id {
+                                let _ = db.set_mod_enabled(pid, rec.id, true);
+                            }
+                            newly_discovered += 1;
+                        }
+                    }
+                    Some(existing) => {
+                        if compare_smapi_versions(&manifest.version, &existing.version)
+                            == std::cmp::Ordering::Greater
+                        {
+                            if let Ok((rec, superseded)) = db.upsert_or_replace_mod(
                                 &manifest.unique_id,
                                 &manifest.name,
                                 &manifest.version,
                                 nexus_id,
                                 None,
-                                folder_name,
+                                &folder_name,
                                 &deps,
                                 &manifest.update_keys,
                             ) {
-                                if let Some(pid) = default_profile_id {
-                                    let _ = db.set_mod_enabled(pid, rec.id, true);
-                                }
+                                self.remove_superseded_vault_dirs(&superseded, &rec.vault_rel_path);
                                 newly_discovered += 1;
                             }
                         }
@@ -255,17 +328,23 @@ impl VaultManager {
                         continue;
                     };
                     for (mod_dir, manifest) in manifests {
-                        let already_in_db = db
-                            .get_mod_by_unique_id_and_version(&manifest.unique_id, &manifest.version)
-                            .is_ok();
-                        if already_in_db {
-                            continue;
+                        let existing = db.find_mod_by_unique_id(&manifest.unique_id).ok().flatten();
+                        if let Some(ref existing_mod) = existing {
+                            // Never downgrade or re-import an older/same version sitting in Mods/
+                            if compare_smapi_versions(&manifest.version, &existing_mod.version)
+                                != std::cmp::Ordering::Greater
+                            {
+                                continue;
+                            }
                         }
 
+                        let was_new = existing.is_none();
                         if let Ok(imported) = self.import_folder(&mod_dir, db) {
                             for rec in imported {
-                                if let Some(pid) = default_profile_id {
-                                    let _ = db.set_mod_enabled(pid, rec.id, true);
+                                if was_new {
+                                    if let Some(pid) = default_profile_id {
+                                        let _ = db.set_mod_enabled(pid, rec.id, true);
+                                    }
                                 }
                                 newly_discovered += 1;
                             }
@@ -463,6 +542,82 @@ mod tests {
                 .join("manifest.json")
                 .is_file()
         );
+
+        let _ = fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn updating_mod_archive_replaces_old_vault_dir_and_survives_rescan() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let test_dir = std::env::temp_dir().join(format!("silo_vault_upgrade_test_{nanos}"));
+        let vault_root = test_dir.join("vault");
+        let game_mods = test_dir.join("Mods");
+        fs::create_dir_all(&game_mods).unwrap();
+
+        let build_zip = |path: &Path, ver: &str| {
+            let file = File::create(path).unwrap();
+            let mut zip = ZipWriter::new(file);
+            let options = SimpleFileOptions::default();
+            zip.start_file("MyMod/manifest.json", options).unwrap();
+            zip.write_all(
+                format!(
+                    r#"{{
+                        "Name": "My Mod",
+                        "Version": "{ver}",
+                        "UniqueID": "Author.MyMod",
+                        "UpdateKeys": ["Nexus:777"]
+                    }}"#
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        };
+
+        let zip_v1 = test_dir.join("MyMod_1.0.0.zip");
+        let zip_v2 = test_dir.join("MyMod_1.1.0.zip");
+        build_zip(&zip_v1, "1.0.0");
+        build_zip(&zip_v2, "1.1.0");
+
+        let vault = VaultManager::new(vault_root.clone()).unwrap();
+        let db = SiloDatabase::open_in_memory().unwrap();
+        let profile = db.create_profile("Cendy", Some("Cendy_1"), true).unwrap();
+
+        let imported1 = vault.import_archive(&zip_v1, &db, Some(777), Some(1)).unwrap();
+        db.set_mod_enabled(profile.id, imported1[0].id, true).unwrap();
+
+        // Simulate older version still mounted in <Stardew Valley>/Mods/MyMod
+        let stale_mounted_mod = game_mods.join("MyMod");
+        fs::create_dir_all(&stale_mounted_mod).unwrap();
+        fs::write(
+            stale_mounted_mod.join("manifest.json"),
+            r#"{"Name":"My Mod","Version":"1.0.0","UniqueID":"Author.MyMod"}"#,
+        )
+        .unwrap();
+
+        // Update via archive / nxm
+        let imported2 = vault.import_archive(&zip_v2, &db, Some(777), Some(2)).unwrap();
+        assert_eq!(imported2.len(), 1);
+        assert_eq!(imported2[0].version, "1.1.0");
+        assert!(!vault_root.join("Author.MyMod_1.0.0").exists());
+        assert!(vault_root.join("Author.MyMod_1.1.0").join("manifest.json").is_file());
+
+        // Simulate app restart calling discover_and_adopt_local_mods
+        vault
+            .discover_and_adopt_local_mods(Some(&game_mods), &[], &db, Some(profile.id))
+            .unwrap();
+
+        let all = db.list_mods().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].version, "1.1.0");
+
+        let p_mods = db.get_profile_mods(profile.id).unwrap();
+        assert_eq!(p_mods.len(), 1);
+        assert_eq!(p_mods[0].mod_record.version, "1.1.0");
+        assert!(p_mods[0].enabled);
 
         let _ = fs::remove_dir_all(&test_dir);
     }

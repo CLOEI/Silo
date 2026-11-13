@@ -18,6 +18,7 @@ sevenz-rust2.workspace = true
 walkdir.workspace = true
 reqwest.workspace = true
 tokio.workspace = true
+image = "0.25.10"
 thiserror.workspace = true
 tracing.workspace = true
 

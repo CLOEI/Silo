@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::{Result, SiloError};
-use crate::manifest::ManifestDependency;
+use crate::manifest::{ManifestDependency, compare_smapi_versions};
 use crate::models::{Profile, ProfileModEntry, VaultMod};
 
 pub struct SiloDatabase {
@@ -109,48 +110,206 @@ impl SiloDatabase {
         dependencies: &[ManifestDependency],
         update_keys: &[String],
     ) -> Result<VaultMod> {
+        let (record, _superseded) = self.upsert_or_replace_mod(
+            unique_id,
+            name,
+            version,
+            nexus_mod_id,
+            nexus_file_id,
+            vault_rel_path,
+            dependencies,
+            update_keys,
+        )?;
+        Ok(record)
+    }
+
+    pub fn upsert_or_replace_mod(
+        &self,
+        unique_id: &str,
+        name: &str,
+        version: &str,
+        nexus_mod_id: Option<i64>,
+        nexus_file_id: Option<i64>,
+        vault_rel_path: &str,
+        dependencies: &[ManifestDependency],
+        update_keys: &[String],
+    ) -> Result<(VaultMod, Vec<String>)> {
         let dependencies_json = serde_json::to_string(dependencies)?;
         let update_keys_json = serde_json::to_string(update_keys)?;
 
-        self.conn.execute(
-            r#"
-            INSERT INTO mods (
-                unique_id, name, version, nexus_mod_id, nexus_file_id,
-                vault_rel_path, dependencies_json, update_keys_json
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-            ON CONFLICT(unique_id, version) DO UPDATE SET
-                name = excluded.name,
-                nexus_mod_id = COALESCE(excluded.nexus_mod_id, mods.nexus_mod_id),
-                nexus_file_id = COALESCE(excluded.nexus_file_id, mods.nexus_file_id),
-                vault_rel_path = excluded.vault_rel_path,
-                dependencies_json = excluded.dependencies_json,
-                update_keys_json = excluded.update_keys_json
-            "#,
-            params![
-                unique_id,
-                name,
-                version,
-                nexus_mod_id,
-                nexus_file_id,
-                vault_rel_path,
-                dependencies_json,
-                update_keys_json,
-            ],
-        )?;
+        let tx = self.conn.unchecked_transaction()?;
+        let existing = self.find_mods_by_unique_id(unique_id)?;
 
-        let mod_record = self.get_mod_by_unique_id_and_version(unique_id, version)?;
+        let (mod_id, superseded_vault_paths) = if existing.is_empty() {
+            tx.execute(
+                r#"
+                INSERT INTO mods (
+                    unique_id, name, version, nexus_mod_id, nexus_file_id,
+                    vault_rel_path, dependencies_json, update_keys_json
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                "#,
+                params![
+                    unique_id,
+                    name,
+                    version,
+                    nexus_mod_id,
+                    nexus_file_id,
+                    vault_rel_path,
+                    dependencies_json,
+                    update_keys_json,
+                ],
+            )?;
+            (tx.last_insert_rowid(), Vec::new())
+        } else {
+            let primary_id = existing[0].id;
+            let superseded: Vec<String> = existing
+                .iter()
+                .filter(|m| m.vault_rel_path != vault_rel_path)
+                .map(|m| m.vault_rel_path.clone())
+                .collect();
 
-        self.conn.execute(
+            let merged_nexus_mod_id =
+                nexus_mod_id.or_else(|| existing.iter().find_map(|m| m.nexus_mod_id));
+
+            for dup in &existing[1..] {
+                tx.execute(
+                    r#"
+                    INSERT INTO profile_mods (profile_id, mod_id, enabled, load_priority)
+                    SELECT profile_id, ?1, enabled, load_priority
+                    FROM profile_mods
+                    WHERE mod_id = ?2
+                    ON CONFLICT(profile_id, mod_id) DO UPDATE SET
+                        enabled = MAX(profile_mods.enabled, excluded.enabled)
+                    "#,
+                    params![primary_id, dup.id],
+                )?;
+                tx.execute("DELETE FROM mods WHERE id = ?1", params![dup.id])?;
+            }
+
+            tx.execute(
+                r#"
+                UPDATE mods SET
+                    unique_id = ?2,
+                    name = ?3,
+                    version = ?4,
+                    nexus_mod_id = ?5,
+                    nexus_file_id = COALESCE(?6, nexus_file_id),
+                    vault_rel_path = ?7,
+                    dependencies_json = ?8,
+                    update_keys_json = ?9
+                WHERE id = ?1
+                "#,
+                params![
+                    primary_id,
+                    unique_id,
+                    name,
+                    version,
+                    merged_nexus_mod_id,
+                    nexus_file_id,
+                    vault_rel_path,
+                    dependencies_json,
+                    update_keys_json,
+                ],
+            )?;
+
+            (primary_id, superseded)
+        };
+
+        tx.execute(
             r#"
             INSERT OR IGNORE INTO profile_mods (profile_id, mod_id, enabled, load_priority)
             SELECT id, ?1, 0, COALESCE((SELECT MAX(load_priority) + 1 FROM profile_mods WHERE profile_id = profiles.id), 0)
             FROM profiles
             "#,
-            params![mod_record.id],
+            params![mod_id],
         )?;
 
-        Ok(mod_record)
+        tx.commit()?;
+
+        let mod_record = self.get_mod_by_id(mod_id)?;
+        Ok((mod_record, superseded_vault_paths))
+    }
+
+    pub fn get_mod_by_id(&self, mod_id: i64) -> Result<VaultMod> {
+        self.conn
+            .query_row(
+                r#"
+                SELECT id, unique_id, name, version, nexus_mod_id, nexus_file_id,
+                       vault_rel_path, dependencies_json, update_keys_json
+                FROM mods
+                WHERE id = ?1
+                "#,
+                params![mod_id],
+                Self::row_to_vault_mod,
+            )
+            .optional()?
+            .ok_or_else(|| SiloError::ModNotFound(mod_id.to_string()))
+    }
+
+    pub fn find_mods_by_unique_id(&self, unique_id: &str) -> Result<Vec<VaultMod>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT id, unique_id, name, version, nexus_mod_id, nexus_file_id,
+                   vault_rel_path, dependencies_json, update_keys_json
+            FROM mods
+            WHERE LOWER(unique_id) = LOWER(?1)
+            ORDER BY id ASC
+            "#,
+        )?;
+
+        let rows = stmt.query_map(params![unique_id], Self::row_to_vault_mod)?;
+        let mut mods = Vec::new();
+        for row in rows {
+            mods.push(row?);
+        }
+        Ok(mods)
+    }
+
+    pub fn find_mod_by_unique_id(&self, unique_id: &str) -> Result<Option<VaultMod>> {
+        let mut matches = self.find_mods_by_unique_id(unique_id)?;
+        if matches.is_empty() {
+            return Ok(None);
+        }
+        matches.sort_by(|a, b| compare_smapi_versions(&b.version, &a.version));
+        Ok(matches.into_iter().next())
+    }
+
+    pub fn deduplicate_mods(&self) -> Result<Vec<String>> {
+        let all_mods = self.list_mods()?;
+        let mut grouped: HashMap<String, Vec<VaultMod>> = HashMap::new();
+        for m in all_mods {
+            grouped
+                .entry(m.unique_id.to_ascii_lowercase())
+                .or_default()
+                .push(m);
+        }
+
+        let mut superseded_paths = Vec::new();
+        for (_key, mut group) in grouped {
+            if group.len() <= 1 {
+                continue;
+            }
+            group.sort_by(|a, b| {
+                compare_smapi_versions(&b.version, &a.version).then_with(|| b.id.cmp(&a.id))
+            });
+            let best = &group[0];
+            let merged_nexus_mod_id = group.iter().find_map(|m| m.nexus_mod_id);
+            let merged_nexus_file_id = group.iter().find_map(|m| m.nexus_file_id);
+            let (_kept, removed_paths) = self.upsert_or_replace_mod(
+                &best.unique_id,
+                &best.name,
+                &best.version,
+                merged_nexus_mod_id,
+                merged_nexus_file_id,
+                &best.vault_rel_path,
+                &best.dependencies,
+                &best.update_keys,
+            )?;
+            superseded_paths.extend(removed_paths);
+        }
+
+        Ok(superseded_paths)
     }
 
     pub fn get_mod_by_unique_id_and_version(
@@ -164,7 +323,7 @@ impl SiloDatabase {
                 SELECT id, unique_id, name, version, nexus_mod_id, nexus_file_id,
                        vault_rel_path, dependencies_json, update_keys_json
                 FROM mods
-                WHERE unique_id = ?1 AND version = ?2
+                WHERE LOWER(unique_id) = LOWER(?1) AND version = ?2
                 "#,
                 params![unique_id, version],
                 Self::row_to_vault_mod,
@@ -503,5 +662,95 @@ mod tests {
 
         db.delete_profile(expanded_profile.id).unwrap();
         assert_eq!(db.list_profiles().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn updating_mod_replaces_old_version_and_preserves_profile_state() {
+        let db = SiloDatabase::open_in_memory().unwrap();
+
+        let p_enabled = db.create_profile("Cendy", Some("Cendy_1"), true).unwrap();
+        let p_disabled = db.create_profile("Vanilla", Some("Vanilla_2"), true).unwrap();
+
+        let v1 = db
+            .upsert_mod(
+                "Pathoschild.ContentPatcher",
+                "Content Patcher",
+                "2.4.0",
+                Some(1915),
+                Some(100),
+                "Pathoschild.ContentPatcher_2.4.0",
+                &[],
+                &["Nexus:1915".to_string()],
+            )
+            .unwrap();
+        db.set_mod_enabled(p_enabled.id, v1.id, true).unwrap();
+
+        let (v2, superseded) = db
+            .upsert_or_replace_mod(
+                "Pathoschild.ContentPatcher",
+                "Content Patcher",
+                "2.9.0",
+                Some(1915),
+                Some(200),
+                "Pathoschild.ContentPatcher_2.9.0",
+                &[],
+                &["Nexus:1915".to_string()],
+            )
+            .unwrap();
+
+        assert_eq!(v2.id, v1.id);
+        assert_eq!(v2.version, "2.9.0");
+        assert_eq!(superseded, vec!["Pathoschild.ContentPatcher_2.4.0".to_string()]);
+        assert_eq!(db.list_mods().unwrap().len(), 1);
+
+        let cendy_mods = db.get_profile_mods(p_enabled.id).unwrap();
+        assert_eq!(cendy_mods.len(), 1);
+        assert_eq!(cendy_mods[0].mod_record.version, "2.9.0");
+        assert!(cendy_mods[0].enabled);
+
+        let vanilla_mods = db.get_profile_mods(p_disabled.id).unwrap();
+        assert_eq!(vanilla_mods.len(), 1);
+        assert_eq!(vanilla_mods[0].mod_record.version, "2.9.0");
+        assert!(!vanilla_mods[0].enabled);
+    }
+
+    #[test]
+    fn deduplicate_mods_merges_legacy_duplicate_versions() {
+        let db = SiloDatabase::open_in_memory().unwrap();
+        let p1 = db.create_profile("Cendy", None, true).unwrap();
+
+        db.conn
+            .execute(
+                r#"
+                INSERT INTO mods (unique_id, name, version, nexus_mod_id, nexus_file_id, vault_rel_path, dependencies_json, update_keys_json)
+                VALUES ('Author.Mod', 'My Mod', '1.9.0', 42, 10, 'Author.Mod_1.9.0', '[]', '["Nexus:42"]')
+                "#,
+                [],
+            )
+            .unwrap();
+        let old_id = db.conn.last_insert_rowid();
+        db.set_mod_enabled(p1.id, old_id, true).unwrap();
+
+        db.conn
+            .execute(
+                r#"
+                INSERT INTO mods (unique_id, name, version, nexus_mod_id, nexus_file_id, vault_rel_path, dependencies_json, update_keys_json)
+                VALUES ('Author.Mod', 'My Mod', '1.10.0', 42, 20, 'Author.Mod_1.10.0', '[]', '["Nexus:42"]')
+                "#,
+                [],
+            )
+            .unwrap();
+
+        let removed = db.deduplicate_mods().unwrap();
+        assert_eq!(removed, vec!["Author.Mod_1.9.0".to_string()]);
+
+        let all = db.list_mods().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].version, "1.10.0");
+
+        let p1_mods = db.get_profile_mods(p1.id).unwrap();
+        assert_eq!(p1_mods.len(), 1);
+        assert_eq!(p1_mods[0].mod_record.version, "1.10.0");
+        assert!(p1_mods[0].enabled);
     }
 }

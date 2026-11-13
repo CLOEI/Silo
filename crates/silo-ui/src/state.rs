@@ -245,6 +245,8 @@ pub fn import_archives_blocking(
     let db = SiloDatabase::open(&db_path)?;
     let vault = VaultManager::new(vault_dir)?;
 
+    let vault_root_clone = vault.vault_root().to_path_buf();
+    let mut all_imported = Vec::new();
     let mut total_imported = 0usize;
     for archive in &archive_paths {
         let imported_mods = vault.import_archive(archive, &db, None, None)?;
@@ -254,7 +256,10 @@ pub fn import_archives_blocking(
             }
         }
         total_imported += imported_mods.len();
+        all_imported.extend(imported_mods);
     }
+
+    sync_active_mounted_mods(game_path.as_ref(), &vault_root_clone, &db, &all_imported);
 
     load_snapshot_blocking(
         game_path,
@@ -477,22 +482,22 @@ pub fn download_nxm_blocking(
         },
     ))?;
 
+    let vault_root_clone = vault.vault_root().to_path_buf();
     if let Some(pid) = selected_profile_id {
         for m in &imported {
             let _ = db.set_mod_enabled(pid, m.id, true);
         }
     }
 
+    sync_active_mounted_mods(game_path.as_ref(), &vault_root_clone, &db, &imported);
+
     let names: Vec<String> = imported.iter().map(|m| m.name.clone()).collect();
-    load_snapshot_blocking(
-        game_path,
-        selected_profile_id,
-        Some(format!(
-            "Downloaded & extracted {} mod(s) via nxm:// ({})",
-            imported.len(),
-            names.join(", ")
-        )),
-    )
+    let status = format!(
+        "Downloaded & extracted {} mod(s) via nxm:// ({})",
+        imported.len(),
+        names.join(", ")
+    );
+    check_nexus_updates_blocking(rt_handle, game_path, selected_profile_id, Some(status))
 }
 
 pub fn check_nexus_updates_blocking(
@@ -533,12 +538,15 @@ pub fn import_folder_blocking(
     let db = SiloDatabase::open(&db_path)?;
     let vault = VaultManager::new(vault_dir)?;
 
+    let vault_root_clone = vault.vault_root().to_path_buf();
     let imported = vault.import_folder(&folder_path, &db)?;
     if let Some(pid) = selected_profile_id {
         for m in &imported {
             let _ = db.set_mod_enabled(pid, m.id, true);
         }
     }
+
+    sync_active_mounted_mods(game_path.as_ref(), &vault_root_clone, &db, &imported);
 
     let names: Vec<String> = imported.iter().map(|m| m.name.clone()).collect();
     load_snapshot_blocking(
@@ -704,20 +712,58 @@ pub fn install_discovered_mod_blocking(
         },
     ))?;
 
+    let vault_root_clone = vault.vault_root().to_path_buf();
     if let Some(pid) = selected_profile_id {
         for m in &imported {
             let _ = db.set_mod_enabled(pid, m.id, true);
         }
     }
 
+    sync_active_mounted_mods(game_path.as_ref(), &vault_root_clone, &db, &imported);
+
     let names: Vec<String> = imported.iter().map(|m| m.name.clone()).collect();
-    load_snapshot_blocking(
-        game_path,
-        selected_profile_id,
-        Some(format!(
-            "Installed & enabled {} mod(s) from Nexus #{nexus_mod_id} ({})",
-            imported.len(),
-            names.join(", ")
-        )),
-    )
+    let status = format!(
+        "Installed & enabled {} mod(s) from Nexus #{nexus_mod_id} ({})",
+        imported.len(),
+        names.join(", ")
+    );
+    check_nexus_updates_blocking(rt_handle, game_path, selected_profile_id, Some(status))
+}
+
+fn sync_active_mounted_mods(
+    game_path: Option<&PathBuf>,
+    vault_root: &std::path::Path,
+    db: &SiloDatabase,
+    updated_mods: &[VaultMod],
+) {
+    let Some(game_dir) = game_path.cloned().or_else(detect_stardew_install_path) else {
+        return;
+    };
+    let Ok(Some(active_profile)) = db.get_active_profile() else {
+        return;
+    };
+    let Ok(active_entries) = db.get_profile_mods(active_profile.id) else {
+        return;
+    };
+    let mods_dir = resolve_mods_dir(&game_dir);
+    if !mods_dir.is_dir() {
+        return;
+    }
+
+    for updated in updated_mods {
+        let is_enabled_in_active = active_entries
+            .iter()
+            .any(|e| e.enabled && e.mod_record.id == updated.id);
+        if !is_enabled_in_active {
+            continue;
+        }
+        let mount_folder_name = silo_core::vault::sanitize_vault_component(&updated.unique_id);
+        let target_mod_dir = mods_dir.join(mount_folder_name);
+        if target_mod_dir.exists() || std::fs::symlink_metadata(&target_mod_dir).is_ok() {
+            let vault_mod_dir = vault_root.join(&updated.vault_rel_path);
+            if vault_mod_dir.is_dir() {
+                let _ = silo_platform::mount_mod_folder(&vault_mod_dir, &target_mod_dir);
+            }
+        }
+    }
 }

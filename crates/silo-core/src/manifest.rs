@@ -211,6 +211,13 @@ pub fn parse_smapi_semver(raw: &str) -> Result<Version> {
     })
 }
 
+pub fn compare_smapi_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    match (parse_smapi_semver(a), parse_smapi_semver(b)) {
+        (Ok(va), Ok(vb)) => va.cmp(&vb),
+        _ => a.trim().cmp(b.trim()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

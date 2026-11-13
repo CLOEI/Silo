@@ -10,7 +10,9 @@ pub mod vault;
 pub use db::SiloDatabase;
 pub use dependencies::{DependencyIssue, DependencyIssueKind, validate_profile_dependencies};
 pub use error::{Result, SiloError};
-pub use manifest::{ContentPackFor, ManifestDependency, SmapiManifest, parse_smapi_semver};
+pub use manifest::{
+    ContentPackFor, ManifestDependency, SmapiManifest, compare_smapi_versions, parse_smapi_semver,
+};
 pub use models::{ActiveProfileContract, Profile, ProfileModEntry, SaveMetadata, Season, VaultMod};
 pub use nexus::{
     DiscoverableMod, DiscoveryPageResult, ModUpdateInfo, NexusClient, NexusDownloadMirror,

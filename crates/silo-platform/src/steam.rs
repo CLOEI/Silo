@@ -175,9 +175,7 @@ fn default_direct_game_paths() -> Vec<PathBuf> {
             paths.push(PathBuf::from(format!(
                 r"{drive}:\Program Files (x86)\Steam\steamapps\common\Stardew Valley"
             )));
-            paths.push(PathBuf::from(format!(
-                r"{drive}:\GOG Games\Stardew Valley"
-            )));
+            paths.push(PathBuf::from(format!(r"{drive}:\GOG Games\Stardew Valley")));
         }
     }
 
@@ -207,11 +205,7 @@ fn default_direct_game_paths() -> Vec<PathBuf> {
                     .join("common")
                     .join("Stardew Valley"),
             );
-            paths.push(
-                home.join("GOG Games")
-                    .join("Stardew Valley")
-                    .join("game"),
-            );
+            paths.push(home.join("GOG Games").join("Stardew Valley").join("game"));
         }
     }
 

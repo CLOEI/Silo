@@ -15,8 +15,7 @@ pub const BUNDLED_SILO_GUARD_DLL: &[u8] =
     include_bytes!("../../../smapi-guard/bin/Release/net6.0/SiloGuard.dll");
 
 /// Companion `manifest.json` for `SiloGuard` embedded directly into the Silo binary.
-pub const BUNDLED_SILO_GUARD_MANIFEST: &[u8] =
-    include_bytes!("../../../smapi-guard/manifest.json");
+pub const BUNDLED_SILO_GUARD_MANIFEST: &[u8] = include_bytes!("../../../smapi-guard/manifest.json");
 
 pub fn resolve_mods_dir(game_install_dir: &Path) -> PathBuf {
     let macos_mods = game_install_dir.join("Contents").join("MacOS").join("Mods");
@@ -219,7 +218,6 @@ pub fn deploy_silo_guard_artifacts(
     fs::write(silo_guard_dir.join("manifest.json"), manifest_bytes)?;
     Ok(silo_guard_dir)
 }
-
 
 pub fn launch_smapi(game_install_dir: &Path) -> io::Result<Child> {
     let candidates = [

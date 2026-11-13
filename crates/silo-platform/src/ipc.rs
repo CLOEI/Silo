@@ -2,8 +2,8 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
 
 use interprocess::local_socket::{
-    GenericFilePath, GenericNamespaced, Listener, ListenerOptions, Name, Stream,
-    ToFsName, ToNsName, prelude::*,
+    GenericFilePath, GenericNamespaced, Listener, ListenerOptions, Name, Stream, ToFsName,
+    ToNsName, prelude::*,
 };
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, warn};
@@ -90,9 +90,7 @@ pub fn extract_nxm_arg_from_env() -> Option<String> {
     std::env::args()
         .skip(1)
         .map(|arg| arg.trim().trim_matches('"').to_string())
-        .find(|arg| {
-            arg.starts_with("nxm://") || arg.starts_with("NXM://")
-        })
+        .find(|arg| arg.starts_with("nxm://") || arg.starts_with("NXM://"))
 }
 
 #[cfg(test)]

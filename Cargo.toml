@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.98.0"
 authors = ["Cendy"]
@@ -19,7 +19,7 @@ silo-core = { path = "crates/silo-core" }
 silo-platform = { path = "crates/silo-platform" }
 
 egui = "0.36.2"
-eframe = { version = "0.36.2", default-features = false, features = ["glow", "wgpu", "wayland", "x11", "default_fonts"] }
+eframe = { version = "0.36.2", default-features = false, features = ["glow", "wgpu", "wayland", "x11", "default_fonts", "links", "accesskit"] }
 egui_extras = { version = "0.36.2", features = ["file", "image", "svg"] }
 
 fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.17.0" }

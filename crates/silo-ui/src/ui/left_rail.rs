@@ -1,9 +1,12 @@
-use egui::{RichText, Sense, Stroke, Ui};
+use egui::{Color32, RichText, Sense, Stroke, Ui};
 
 use crate::app::{ActiveCenterTab, SiloApp};
 use crate::icons::{Icon, icon_button};
 use crate::theme;
 use crate::ui::widgets;
+
+const SAVE_CARD_HEIGHT: f32 = 86.0;
+const PROFILE_CARD_HEIGHT: f32 = 44.0;
 
 enum Action {
     Rescan,
@@ -11,6 +14,43 @@ enum Action {
     Clone(i64),
     Delete(i64),
     NewProfile,
+}
+
+fn card_shell<R>(
+    ui: &mut Ui,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    height: f32,
+    background: Color32,
+    hover_background: Color32,
+    border: Color32,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> (egui::Response, R) {
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), Sense::click());
+    let fill = if response.hovered() {
+        hover_background
+    } else {
+        background
+    };
+    ui.painter().rect(
+        rect,
+        egui::CornerRadius::same(8),
+        fill,
+        Stroke::new(1.0, border),
+        egui::StrokeKind::Inside,
+    );
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    let inner = ui.scope_builder(
+        egui::UiBuilder::new()
+            .id_salt(id_salt)
+            .max_rect(rect.shrink2(egui::vec2(12.0, 8.0)))
+            .layout(egui::Layout::top_down(egui::Align::LEFT)),
+        add_contents,
+    );
+    (response, inner.inner)
 }
 
 pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
@@ -74,13 +114,13 @@ pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
                         );
                     });
             } else {
-                for (save, bound_profile_id) in &saves {
+                for (index, (save, bound_profile_id)) in saves.iter().enumerate() {
                     let is_selected = !in_settings
                         && bound_profile_id.is_some()
                         && *bound_profile_id == selected_profile_id;
                     let is_mounted =
                         bound_profile_id.is_some() && *bound_profile_id == active_profile_id;
-                    let bg = if is_selected {
+                    let background = if is_selected {
                         palette.separator
                     } else {
                         palette.background
@@ -90,38 +130,44 @@ pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
                     } else {
                         palette.border
                     };
+                    let title = format!("{} · {} Farm", save.farmer_name, save.farm_name);
 
-                    egui::Frame::NONE
-                        .fill(bg)
-                        .stroke(Stroke::new(1.0, border))
-                        .corner_radius(egui::CornerRadius::same(8))
-                        .inner_margin(egui::Margin::same(12))
-                        .show(ui, |ui| {
+                    let (card_response, child_action) = card_shell(
+                        ui,
+                        ("save-card", index),
+                        SAVE_CARD_HEIGHT,
+                        background,
+                        palette.separator,
+                        border,
+                        |ui| {
+                            let mut child_action = false;
                             ui.horizontal(|ui| {
-                                let title =
-                                    format!("{} · {} Farm", save.farmer_name, save.farm_name);
-                                let response = ui.add(
-                                    egui::Label::new(
-                                        RichText::new(title)
-                                            .font(theme::semibold(12.0))
-                                            .color(palette.text),
-                                    )
-                                    .truncate()
-                                    .sense(Sense::click()),
+                                let title_width = (ui.available_width() - 110.0).max(60.0);
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(title_width, 20.0),
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(title.clone())
+                                                    .font(theme::semibold(12.0))
+                                                    .color(palette.text),
+                                            )
+                                            .truncate(),
+                                        );
+                                    },
                                 );
-                                if response.clicked()
-                                    && let Some(profile_id) = bound_profile_id
-                                {
-                                    action = Some(Action::Select(*profile_id));
-                                }
 
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
                                         if let Some(profile_id) = bound_profile_id
-                                            && icon_button(ui, Icon::Copy, palette.text).clicked()
+                                            && icon_button(ui, Icon::Copy, palette.text)
+                                                .on_hover_text("Clone profile")
+                                                .clicked()
                                         {
                                             action = Some(Action::Clone(*profile_id));
+                                            child_action = true;
                                         }
                                         if is_mounted {
                                             widgets::badge(
@@ -161,7 +207,16 @@ pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
                                 )
                                 .truncate(),
                             );
-                        });
+                            child_action
+                        },
+                    );
+
+                    if card_response.clicked()
+                        && !child_action
+                        && let Some(profile_id) = bound_profile_id
+                    {
+                        action = Some(Action::Select(*profile_id));
+                    }
                     ui.add_space(6.0);
                 }
             }
@@ -177,10 +232,10 @@ pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
             });
             ui.add_space(6.0);
 
-            for (profile_id, name) in &profiles {
+            for (index, (profile_id, name)) in profiles.iter().enumerate() {
                 let is_selected = !in_settings && Some(*profile_id) == selected_profile_id;
                 let is_mounted = Some(*profile_id) == active_profile_id;
-                let bg = if is_selected {
+                let background = if is_selected {
                     palette.separator
                 } else {
                     palette.background
@@ -191,25 +246,31 @@ pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
                     palette.border
                 };
 
-                egui::Frame::NONE
-                    .fill(bg)
-                    .stroke(Stroke::new(1.0, border))
-                    .corner_radius(egui::CornerRadius::same(8))
-                    .inner_margin(egui::Margin::symmetric(12, 8))
-                    .show(ui, |ui| {
+                let (card_response, child_action) = card_shell(
+                    ui,
+                    ("profile-card", index),
+                    PROFILE_CARD_HEIGHT,
+                    background,
+                    palette.separator,
+                    border,
+                    |ui| {
+                        let mut child_action = false;
                         ui.horizontal(|ui| {
-                            let response = ui.add(
-                                egui::Label::new(
-                                    RichText::new(name.clone())
-                                        .font(theme::semibold(12.0))
-                                        .color(palette.text),
-                                )
-                                .truncate()
-                                .sense(Sense::click()),
+                            let title_width = (ui.available_width() - 140.0).max(60.0);
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(title_width, 20.0),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(name.clone())
+                                                .font(theme::semibold(12.0))
+                                                .color(palette.text),
+                                        )
+                                        .truncate(),
+                                    );
+                                },
                             );
-                            if response.clicked() {
-                                action = Some(Action::Select(*profile_id));
-                            }
 
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
@@ -219,12 +280,14 @@ pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
                                         .clicked()
                                     {
                                         action = Some(Action::Delete(*profile_id));
+                                        child_action = true;
                                     }
                                     if icon_button(ui, Icon::Copy, palette.text)
                                         .on_hover_text("Clone profile")
                                         .clicked()
                                     {
                                         action = Some(Action::Clone(*profile_id));
+                                        child_action = true;
                                     }
                                     if is_mounted {
                                         widgets::badge(
@@ -244,7 +307,13 @@ pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
                                 },
                             );
                         });
-                    });
+                        child_action
+                    },
+                );
+
+                if card_response.clicked() && !child_action {
+                    action = Some(Action::Select(*profile_id));
+                }
                 ui.add_space(6.0);
             }
         });

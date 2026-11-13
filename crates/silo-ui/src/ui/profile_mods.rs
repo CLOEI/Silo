@@ -136,7 +136,7 @@ pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
 
     match action {
         Some(Action::Toggle(mod_id, enabled)) => app.toggle_mod(mod_id, enabled, ctx),
-        Some(Action::OpenUrl(url)) => ctx.open_url(egui::OpenUrl::new_tab(url)),
+        Some(Action::OpenUrl(url)) => crate::app::open_external(ctx, url),
         None => {}
     }
 }

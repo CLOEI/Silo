@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Silo logo" width="360">
+</p>
+
 # Silo
 
 **Silo** is a fast, save-centric Stardew Valley mod and profile manager built with Rust (egui + [fastframe](https://github.com/crmne/fastframe)) and a companion SMAPI mod (`SiloGuard`).

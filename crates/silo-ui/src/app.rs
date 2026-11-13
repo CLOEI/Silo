@@ -527,7 +527,7 @@ impl SiloApp {
         ctx: &egui::Context,
     ) {
         if !self.snapshot.has_nexus_api_key {
-            ctx.open_url(egui::OpenUrl::new_tab(nexus_files_url));
+            open_external(ctx, nexus_files_url);
             self.snapshot.status_message = format!(
                 "Opened {mod_display_name} on Nexus Mods — click 'Mod Manager Download' (nxm:// is auto-bound) or set your API Key for 1-click in-app install"
             );
@@ -856,6 +856,38 @@ impl eframe::App for SiloApp {
             });
 
         fastframe_titlebar::align_traffic_lights(frame, &ctx, header_height);
+    }
+}
+
+pub(crate) fn open_external(ctx: &egui::Context, url: impl Into<String>) {
+    let url = url.into().trim().to_string();
+    tracing::info!(url = %url, "Opening external URL");
+
+    let valid = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .is_some_and(|rest| !rest.is_empty() && !rest.starts_with('/'));
+    if !valid {
+        tracing::warn!(url = %url, "Refusing to open an invalid external URL");
+        return;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = ctx;
+        match std::process::Command::new("/usr/bin/open")
+            .arg(&url)
+            .status()
+        {
+            Ok(status) if status.success() => {}
+            Ok(status) => tracing::warn!(url = %url, %status, "open failed"),
+            Err(err) => tracing::warn!(url = %url, %err, "could not run open"),
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        ctx.open_url(egui::OpenUrl::new_tab(url));
     }
 }
 

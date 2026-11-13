@@ -33,48 +33,58 @@ pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
                 });
 
                 ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.add(Icon::Search.image(palette.disabled, 13.0));
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut app.discovery_search)
-                            .id(Id::new("discover-search-input"))
-                            .hint_text("Search mods...")
-                            .desired_width(220.0)
-                            .frame(
-                                egui::Frame::NONE
-                                    .fill(palette.background)
-                                    .stroke(egui::Stroke::new(1.0, palette.border))
-                                    .corner_radius(egui::CornerRadius::same(6))
-                                    .inner_margin(egui::Margin::symmetric(10, 5)),
-                            ),
-                    );
-                    if response.changed() {
-                        app.discovery_page = 1;
-                        app.sync_cover_textures(ctx);
-                    }
-                    if response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter)) {
-                        app.discovery_page = 1;
-                        if app.discovery_category == "Live Nexus" {
-                            app.fetch_live_nexus_page(1, ctx);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 32.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.add(Icon::Search.image(palette.disabled, 13.0));
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut app.discovery_search)
+                                .id(Id::new("discover-search-input"))
+                                .hint_text("Search mods...")
+                                .desired_width(220.0)
+                                .frame(
+                                    egui::Frame::NONE
+                                        .fill(palette.background)
+                                        .stroke(egui::Stroke::new(1.0, palette.border))
+                                        .corner_radius(egui::CornerRadius::same(6))
+                                        .inner_margin(egui::Margin::symmetric(10, 5)),
+                                ),
+                        );
+                        if response.changed() {
+                            app.discovery_page = 1;
+                            app.sync_cover_textures(ctx);
                         }
-                    }
-                    if (response.has_focus() || response.lost_focus())
-                        && ui.input(|input| input.key_pressed(Key::Escape))
-                    {
-                        app.clear_discovery_search(ctx);
-                    }
+                        if response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter))
+                        {
+                            app.discovery_page = 1;
+                            if app.discovery_category == "Live Nexus" {
+                                app.fetch_live_nexus_page(1, ctx);
+                            }
+                        }
+                        if (response.has_focus() || response.lost_focus())
+                            && ui.input(|input| input.key_pressed(Key::Escape))
+                        {
+                            app.clear_discovery_search(ctx);
+                        }
 
-                    if !app.discovery_search.is_empty()
-                        && widgets::small_button(ui, &palette, "Clear").clicked()
-                    {
-                        app.clear_discovery_search(ctx);
-                    }
-                    if widgets::secondary_icon_button(ui, &palette, Icon::Refresh, "Sync Trending")
+                        if !app.discovery_search.is_empty()
+                            && widgets::small_button(ui, &palette, "Clear").clicked()
+                        {
+                            app.clear_discovery_search(ctx);
+                        }
+                        if widgets::secondary_icon_button(
+                            ui,
+                            &palette,
+                            Icon::Refresh,
+                            "Sync Trending",
+                        )
                         .clicked()
-                    {
-                        app.refresh_discovery_feed(ctx);
-                    }
-                });
+                        {
+                            app.refresh_discovery_feed(ctx);
+                        }
+                    },
+                );
             });
 
         let page_result = app.current_discovery_page();
@@ -219,7 +229,7 @@ pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if widgets::secondary_button(ui, &palette, "Nexus Page ↗").clicked() {
-                                ctx.open_url(egui::OpenUrl::new_tab(nexus_page_url.clone()));
+                                crate::app::open_external(ctx, nexus_page_url.clone());
                             }
                             if widgets::primary_button(ui, &palette, install_label).clicked() {
                                 app.install_discovered_mod(

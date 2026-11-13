@@ -73,9 +73,10 @@ pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
                                     )
                                     .clicked()
                                     {
-                                        ctx.open_url(egui::OpenUrl::new_tab(
+                                        crate::app::open_external(
+                                            ctx,
                                             "https://next.nexusmods.com/settings/api-keys",
-                                        ));
+                                        );
                                     }
                                 },
                             );

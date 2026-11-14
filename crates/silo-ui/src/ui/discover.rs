@@ -11,8 +11,15 @@ pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
     ui.vertical(|ui| {
         egui::Frame::NONE
             .fill(palette.container)
+            .corner_radius(egui::CornerRadius {
+                nw: 8,
+                ne: 8,
+                sw: 0,
+                se: 0,
+            })
             .inner_margin(egui::Margin::symmetric(16, 10))
             .show(ui, |ui| {
+                ui.set_width(ui.available_width());
                 ui.horizontal_wrapped(|ui| {
                     let categories = [
                         ("All", "All"),
@@ -258,8 +265,15 @@ pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
 
         egui::Frame::NONE
             .fill(palette.container)
+            .corner_radius(egui::CornerRadius {
+                nw: 0,
+                ne: 0,
+                sw: 8,
+                se: 8,
+            })
             .inner_margin(egui::Margin::symmetric(16, 8))
             .show(ui, |ui| {
+                ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     widgets::muted(
                         ui,
@@ -298,4 +312,65 @@ pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
                 });
             });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn top_filter_container_spans_full_discover_width() {
+        let ctx = egui::Context::default();
+        let palette = theme::Palette::dark();
+        let rendering = fastframe_text::TextRendering::default();
+        theme::install_fonts(&ctx, rendering);
+        theme::apply(&ctx, palette, rendering);
+
+        let mut search = String::new();
+        let raw_input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            ..Default::default()
+        };
+
+        let mut container_width = 0.0f32;
+        let mut outer_width = 0.0f32;
+        let mut output = ctx.run_ui(raw_input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                outer_width = ui.available_width();
+                let resp = egui::Frame::NONE
+                    .fill(palette.container)
+                    .inner_margin(egui::Margin::symmetric(16, 10))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal_wrapped(|ui| {
+                            for label in ["All", "Live Nexus", "Frameworks", "QoL"] {
+                                let _ = widgets::tab_button(ui, &palette, label, label == "All");
+                            }
+                        });
+                        ui.add_space(6.0);
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), 32.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut search)
+                                        .id(Id::new("discover-search-test"))
+                                        .desired_width(220.0),
+                                );
+                            },
+                        );
+                    });
+                container_width = resp.response.rect.width();
+            });
+        });
+        output.textures_delta.clear();
+
+        assert!(
+            (container_width - outer_width).abs() <= 1.0,
+            "expected filter container width ({container_width}) to match outer width ({outer_width})"
+        );
+    }
 }

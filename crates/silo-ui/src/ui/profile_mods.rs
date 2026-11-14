@@ -63,71 +63,74 @@ pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
                 }
 
                 let content_rect = rect.shrink2(egui::vec2(16.0, 8.0));
-                ui.scope_builder(
+                let mut child_ui = ui.new_child(
                     egui::UiBuilder::new()
+                        .id_salt(("profile-mod-row", mod_id))
                         .max_rect(content_rect)
                         .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                    |ui| {
-                        if widgets::toggle_pill(ui, &palette, enabled).clicked() {
-                            action = Some(Action::Toggle(mod_id, enabled));
-                        }
-                        ui.add_space(8.0);
-                        ui.vertical(|ui| {
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(mod_name.clone())
-                                        .font(theme::semibold(12.5))
-                                        .color(palette.text),
-                                )
-                                .truncate(),
-                            );
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(unique_id.clone())
-                                        .font(theme::regular(10.5))
-                                        .color(palette.disabled),
-                                )
-                                .truncate(),
-                            );
-                        });
-
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            widgets::badge(
-                                ui,
-                                format!("v{version}"),
-                                palette.text,
-                                palette.container,
-                            );
-
-                            for issue in issues.iter().rev() {
-                                if widgets::clickable_badge(
-                                    ui,
-                                    &palette,
-                                    dependency_badge_label(issue),
-                                    palette.red,
-                                    palette.container,
-                                )
-                                .clicked()
-                                {
-                                    action = Some(Action::OpenUrl(issue.nexus_url()));
-                                }
-                            }
-
-                            if let Some(update) = update
-                                && widgets::clickable_badge(
-                                    ui,
-                                    &palette,
-                                    format!("Update Available: v{} ↗", update.latest_version),
-                                    palette.selected_text,
-                                    palette.selected,
-                                )
-                                .clicked()
-                            {
-                                action = Some(Action::OpenUrl(update.nexus_url()));
-                            }
-                        });
-                    },
                 );
+                child_ui.shrink_clip_rect(rect);
+                {
+                    let ui = &mut child_ui;
+                    if widgets::toggle_pill(ui, &palette, enabled).clicked() {
+                        action = Some(Action::Toggle(mod_id, enabled));
+                    }
+                    ui.add_space(8.0);
+                    ui.vertical(|ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(mod_name.clone())
+                                    .font(theme::semibold(12.5))
+                                    .color(palette.text),
+                            )
+                            .truncate(),
+                        );
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(unique_id.clone())
+                                    .font(theme::regular(10.5))
+                                    .color(palette.disabled),
+                            )
+                            .truncate(),
+                        );
+                    });
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        widgets::badge(
+                            ui,
+                            format!("v{version}"),
+                            palette.text,
+                            palette.container,
+                        );
+
+                        for issue in issues.iter().rev() {
+                            if widgets::clickable_badge(
+                                ui,
+                                &palette,
+                                dependency_badge_label(issue),
+                                palette.red,
+                                palette.container,
+                            )
+                            .clicked()
+                            {
+                                action = Some(Action::OpenUrl(issue.nexus_url()));
+                            }
+                        }
+
+                        if let Some(update) = update
+                            && widgets::clickable_badge(
+                                ui,
+                                &palette,
+                                format!("Update Available: v{} ↗", update.latest_version),
+                                palette.selected_text,
+                                palette.selected,
+                            )
+                            .clicked()
+                        {
+                            action = Some(Action::OpenUrl(update.nexus_url()));
+                        }
+                    });
+                }
 
                 ui.painter()
                     .hline(rect.x_range(), rect.max.y, Stroke::new(1.0, palette.border));

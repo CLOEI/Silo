@@ -4593,7 +4593,7 @@ dependencies = [
 
 [[package]]
 name = "silo-core"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "image",
@@ -4614,7 +4614,7 @@ dependencies = [
 
 [[package]]
 name = "silo-platform"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "core-foundation 0.10.0",
  "dirs",
@@ -4634,7 +4634,7 @@ dependencies = [
 
 [[package]]
 name = "silo-ui"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "eframe",

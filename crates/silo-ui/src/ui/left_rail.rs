@@ -43,14 +43,15 @@ fn card_shell<R>(
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
-    let inner = ui.scope_builder(
+    let mut child_ui = ui.new_child(
         egui::UiBuilder::new()
             .id_salt(id_salt)
             .max_rect(rect.shrink2(egui::vec2(12.0, 8.0)))
             .layout(egui::Layout::top_down(egui::Align::LEFT)),
-        add_contents,
     );
-    (response, inner.inner)
+    child_ui.shrink_clip_rect(rect);
+    let inner = add_contents(&mut child_ui);
+    (response, inner)
 }
 
 pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
@@ -327,5 +328,116 @@ pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
         Some(Action::Delete(profile_id)) => app.delete_profile(profile_id, ctx),
         Some(Action::NewProfile) => app.create_new_profile(ctx),
         None => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cards_do_not_overlap_vertically_when_selected() {
+        let ctx = egui::Context::default();
+        let palette = theme::Palette::dark();
+        theme::apply(&ctx, palette, fastframe_text::TextRendering::default());
+
+        let mut click_pos = egui::Pos2::ZERO;
+        for frame in 0..3 {
+            let mut raw_input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 800.0),
+                )),
+                ..Default::default()
+            };
+            if frame == 1 {
+                raw_input.events.push(egui::Event::PointerMoved(click_pos));
+                raw_input.events.push(egui::Event::PointerButton {
+                    pos: click_pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            } else if frame == 2 {
+                raw_input.events.push(egui::Event::PointerButton {
+                    pos: click_pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+
+            let mut rects = Vec::new();
+            let mut output = ctx.run_ui(raw_input, |ui| {
+                egui::Panel::left("silo-left-rail")
+                    .exact_size(330.0)
+                    .resizable(false)
+                    .frame(
+                        egui::Frame::NONE
+                            .fill(palette.container)
+                            .inner_margin(egui::Margin::same(16)),
+                    )
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("left-rail-scroll")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                for i in 0..3 {
+                                    let border = if frame >= 1 && i == 1 {
+                                        palette.selected
+                                    } else {
+                                        palette.border
+                                    };
+                                    let (resp, _) = card_shell(
+                                        ui,
+                                        ("save-card", i),
+                                        SAVE_CARD_HEIGHT,
+                                        palette.background,
+                                        palette.separator,
+                                        border,
+                                        |ui| {
+                                            ui.label(format!("Save {i}"));
+                                        },
+                                    );
+                                    if frame == 0 && i == 1 {
+                                        click_pos = resp.rect.center();
+                                    }
+                                    rects.push(resp.rect);
+                                    ui.add_space(6.0);
+                                }
+                                for i in 0..3 {
+                                    let border = if frame >= 1 && i == 1 {
+                                        palette.selected
+                                    } else {
+                                        palette.border
+                                    };
+                                    let (resp, _) = card_shell(
+                                        ui,
+                                        ("profile-card", i),
+                                        PROFILE_CARD_HEIGHT,
+                                        palette.background,
+                                        palette.separator,
+                                        border,
+                                        |ui| {
+                                            ui.label(format!("Profile {i}"));
+                                        },
+                                    );
+                                    rects.push(resp.rect);
+                                    ui.add_space(6.0);
+                                }
+                            });
+                    });
+            });
+            output.textures_delta.clear();
+
+            for pair in rects.windows(2) {
+                assert!(
+                    pair[0].max.y < pair[1].min.y,
+                    "frame {frame}: adjacent card rects overlapped: {:?} vs {:?}",
+                    pair[0],
+                    pair[1]
+                );
+            }
+        }
     }
 }

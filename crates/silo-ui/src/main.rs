@@ -72,8 +72,10 @@ fn main() {
 
     let nxm_rx_cell = Rc::new(RefCell::new(Some(nxm_rx)));
 
-    let native_options = || eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
+    let app_icon = load_app_icon().map(Arc::new);
+
+    let native_options = || {
+        let mut viewport = egui::ViewportBuilder::default()
             .with_title("Silo — Stardew Valley Mod & Save Manager")
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([960.0, 600.0])
@@ -81,8 +83,14 @@ fn main() {
             .with_titlebar_shown(!cfg!(target_os = "macos"))
             .with_title_shown(!cfg!(target_os = "macos"))
             .with_decorations(!fastframe_titlebar::enabled())
-            .with_app_id("com.cendy.silo"),
-        ..Default::default()
+            .with_app_id("com.cendy.silo");
+        if let Some(icon) = app_icon.as_ref() {
+            viewport = viewport.with_icon(icon.clone());
+        }
+        eframe::NativeOptions {
+            viewport,
+            ..Default::default()
+        }
     };
 
     let app_creator = || -> eframe::AppCreator<'static> {
@@ -114,5 +122,28 @@ fn main() {
     if let Err(err) = result {
         eprintln!("Silo failed to open a window: {err}");
         std::process::exit(1);
+    }
+}
+
+fn load_app_icon() -> Option<egui::IconData> {
+    match eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon.png")) {
+        Ok(icon) => Some(icon),
+        Err(err) => {
+            tracing::warn!(%err, "Failed to decode embedded app icon");
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_app_icon;
+
+    #[test]
+    fn app_icon_decodes_cleanly() {
+        let icon = load_app_icon().expect("embedded assets/icon.png should decode");
+        assert_eq!(icon.width, 1024);
+        assert_eq!(icon.height, 1024);
+        assert_eq!(icon.rgba.len(), 1024 * 1024 * 4);
     }
 }

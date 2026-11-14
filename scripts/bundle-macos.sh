@@ -26,7 +26,7 @@ SQUARE="$OUT_DIR/Silo-icon-1024.png"
 SCALED="$OUT_DIR/Silo-icon-scaled.png"
 rm -rf "$ICONSET" "$SCALED" "$SQUARE"
 mkdir -p "$ICONSET"
-sips -Z 1024 "$ROOT/assets/logo.png" --out "$SCALED" >/dev/null
+sips -Z 1024 "$ROOT/assets/icon.png" --out "$SCALED" >/dev/null
 sips --padToHeightWidth 1024 1024 --padColor FFFFFF "$SCALED" --out "$SQUARE" >/dev/null
 sips -z 16 16 "$SQUARE" --out "$ICONSET/icon_16x16.png" >/dev/null
 sips -z 32 32 "$SQUARE" --out "$ICONSET/icon_16x16@2x.png" >/dev/null

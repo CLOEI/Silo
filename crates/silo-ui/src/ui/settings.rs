@@ -9,6 +9,8 @@ pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
     let palette = app.palette;
     let strict_lock_on = app.snapshot.strict_lock;
     let has_api_key = app.snapshot.has_nexus_api_key;
+    let is_premium = app.snapshot.nexus_is_premium;
+    let account_name = app.snapshot.nexus_account_name.clone();
     let vault_dir = app.snapshot.vault_dir.display().to_string();
     let db_path = app.snapshot.db_path.display().to_string();
     let saves_dir = app
@@ -53,16 +55,16 @@ pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
                                     .font(theme::bold(13.0))
                                     .color(palette.text),
                             );
-                            widgets::badge(
-                                ui,
-                                if has_api_key { "CONNECTED" } else { "NOT SET" },
-                                if has_api_key {
-                                    palette.green
-                                } else {
-                                    palette.disabled
-                                },
-                                palette.background,
-                            );
+                            let (badge_label, badge_color) = if !has_api_key {
+                                ("NOT SET", palette.disabled)
+                            } else if is_premium {
+                                ("PREMIUM", palette.green)
+                            } else if account_name.is_some() {
+                                ("FREE TIER", palette.amber)
+                            } else {
+                                ("UNVERIFIED", palette.amber)
+                            };
+                            widgets::badge(ui, badge_label, badge_color, palette.background);
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -78,16 +80,33 @@ pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
                                             "https://next.nexusmods.com/settings/api-keys",
                                         );
                                     }
+                                    if has_api_key
+                                        && widgets::secondary_button(ui, &palette, "Verify Tier")
+                                            .clicked()
+                                    {
+                                        app.verify_nexus_api_key(ctx);
+                                    }
                                 },
                             );
                         });
 
                         ui.add_space(2.0);
-                        widgets::muted(
-                            ui,
-                            &palette,
-                            "Type or press Ctrl+V inside the box below to set your Personal API Key for 1-click nxm:// downloads and update checks.",
-                        );
+                        let account_hint = match (has_api_key, &account_name, is_premium) {
+                            (true, Some(name), true) => format!(
+                                "Account: {name} (Premium) — Direct 1-click installs to Vault, nxm:// links, and update checks are enabled."
+                            ),
+                            (true, Some(name), false) => format!(
+                                "Account: {name} (Free tier) — nxm:// 'Mod Manager Download' links and update checks are enabled. Direct 1-click installs without opening the browser require Nexus Premium."
+                            ),
+                            (true, None, _) => {
+                                "API key saved (tier not verified yet — click 'Verify Tier' to check Nexus Premium status).".to_string()
+                            }
+                            (false, _, _) => {
+                                "Personal API Key enables 'Mod Manager Download' (nxm://) from Nexus pages and update checks. Direct 1-click Vault downloads require Nexus Premium. Manual Download + Import Archive needs no API key."
+                                    .to_string()
+                            }
+                        };
+                        widgets::muted(ui, &palette, account_hint);
                         ui.add_space(4.0);
 
                         ui.with_layout(

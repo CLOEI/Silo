@@ -108,6 +108,17 @@ impl NxmLink {
     }
 }
 
+/// Account status returned by `GET /v1/users/validate.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NexusUserValidation {
+    pub user_id: i64,
+    pub name: String,
+    #[serde(default)]
+    pub is_premium: bool,
+    #[serde(default)]
+    pub is_supporter: bool,
+}
+
 /// Mirror entry returned by `GET /v1/games/{domain}/mods/{mod_id}/files/{file_id}/download_link.json`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct NexusDownloadMirror {
@@ -946,6 +957,22 @@ impl NexusClient {
         Ok(Self { http })
     }
 
+    /// Validates the API key via `GET /v1/users/validate.json` and returns account tier info
+    /// (`is_premium`, `is_supporter`, `name`).
+    pub async fn validate_user(&self) -> Result<NexusUserValidation> {
+        let url = format!("{}/users/validate.json", NEXUS_API_BASE);
+        let resp = self.http.get(&url).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(SiloError::NexusApi(format!(
+                "HTTP {status} from users/validate.json: {body}"
+            )));
+        }
+
+        Ok(resp.json().await?)
+    }
+
     /// Resolves CDN download mirrors for an [`NxmLink`] via
     /// `GET /v1/games/stardewvalley/mods/{mod_id}/files/{file_id}/download_link.json`.
     pub async fn get_download_links(&self, nxm: &NxmLink) -> Result<Vec<NexusDownloadMirror>> {
@@ -963,6 +990,11 @@ impl NexusClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            if status == reqwest::StatusCode::FORBIDDEN && nxm.key.is_none() {
+                return Err(SiloError::NexusApi(
+                    "Nexus Mods returned 403 Forbidden: direct API downloads require a Nexus Mods Premium account (or use 'Mod Manager Download' nxm:// from the web page).".to_string(),
+                ));
+            }
             return Err(SiloError::NexusApi(format!(
                 "HTTP {status} from download_link.json: {body}"
             )));
@@ -1273,5 +1305,26 @@ mod tests {
         assert!(decoded.height() <= COVER_THUMB_MAX_H);
         assert_eq!(decoded.width(), COVER_THUMB_MAX_W);
         assert_eq!(decoded.height(), COVER_THUMB_MAX_H);
+    }
+
+    #[test]
+    fn parses_nexus_user_validation_premium_and_free() {
+        let premium: NexusUserValidation = serde_json::from_str(
+            r#"{"user_id":101,"key":"abc","name":"Alice","is_premium":true,"is_supporter":false}"#,
+        )
+        .unwrap();
+        assert_eq!(premium.user_id, 101);
+        assert_eq!(premium.name, "Alice");
+        assert!(premium.is_premium);
+        assert!(!premium.is_supporter);
+
+        let free: NexusUserValidation = serde_json::from_str(
+            r#"{"user_id":102,"name":"Bob","is_premium":false}"#,
+        )
+        .unwrap();
+        assert_eq!(free.user_id, 102);
+        assert_eq!(free.name, "Bob");
+        assert!(!free.is_premium);
+        assert!(!free.is_supporter);
     }
 }

@@ -2,10 +2,11 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use silo_core::{
-    DependencyIssue, DiscoverableMod, DiscoveryPageResult, ModUpdateInfo, NexusClient, NxmLink,
-    Profile, ProfileModEntry, SaveMetadata, SiloDatabase, VaultManager, VaultMod,
-    cache_covers_for_mods, curated_stardew_mods, fetch_nexus_graphql_page, find_cached_cover_path,
-    resolve_nexus_api_key, scan_saves_directory, validate_profile_dependencies,
+    DependencyIssue, DiscoverableMod, DiscoveryPageResult, ModUpdateInfo, NexusClient,
+    NexusUserValidation, NxmLink, Profile, ProfileModEntry, SaveMetadata, SiloDatabase, SiloError,
+    VaultManager, VaultMod, cache_covers_for_mods, curated_stardew_mods,
+    fetch_nexus_graphql_page, find_cached_cover_path, resolve_nexus_api_key, scan_saves_directory,
+    validate_profile_dependencies,
 };
 use silo_platform::{
     PROTECTED_MOD_FOLDERS, activate_profile_on_disk, deploy_bundled_silo_guard,
@@ -33,6 +34,8 @@ pub struct SiloSnapshot {
     pub live_nexus_page: Option<DiscoveryPageResult>,
     pub nexus_api_key: String,
     pub has_nexus_api_key: bool,
+    pub nexus_is_premium: bool,
+    pub nexus_account_name: Option<String>,
     pub strict_lock: bool,
     pub dark_mode: Option<bool>,
     pub status_message: String,
@@ -161,6 +164,11 @@ pub fn load_snapshot_blocking(
     let dependency_issues = validate_profile_dependencies(&profile_mods, &all_vault_mods);
     let resolved_key = resolve_nexus_api_key(&db_path).unwrap_or_default();
     let has_nexus_api_key = !resolved_key.trim().is_empty();
+    let (nexus_is_premium, nexus_account_name, _) = if has_nexus_api_key {
+        load_cached_nexus_tier(&db, &resolved_key)
+    } else {
+        (false, None, false)
+    };
     let dark_mode = db
         .get_setting("dark_mode")
         .ok()
@@ -193,6 +201,8 @@ pub fn load_snapshot_blocking(
         live_nexus_page: None,
         nexus_api_key: resolved_key,
         has_nexus_api_key,
+        nexus_is_premium,
+        nexus_account_name,
         strict_lock,
         dark_mode,
         status_message,
@@ -455,7 +465,7 @@ pub fn download_nxm_blocking(
     let vault_dir = silo_vault_dir().context("Could not resolve ~/.silo/vault")?;
 
     let api_key = resolve_nexus_api_key(&db_path).context(
-        "Nexus Mods API key not set. Set NEXUS_API_KEY env var or store 'nexus_api_key' in ~/.silo/silo.db settings.",
+        "Cannot resolve Mod Manager Download (nxm://) without a Nexus Mods API key. Nexus Mods' download-link API requires a free Personal API Key in Settings (or use 'Manual Download' on the mod page + 'Import Archive' with no key).",
     )?;
 
     let client = NexusClient::new(&api_key)?;
@@ -516,9 +526,20 @@ pub fn check_nexus_updates_blocking(
         load_snapshot_blocking(game_path, selected_profile_id, status_override.clone())?;
     let db_path = silo_db_path().context("Could not resolve ~/.silo/silo.db")?;
 
-    if !snapshot.all_vault_mods.is_empty() {
-        if let Some(api_key) = resolve_nexus_api_key(&db_path) {
-            if let Ok(client) = NexusClient::new(&api_key) {
+    if let Some(api_key) = resolve_nexus_api_key(&db_path) {
+        if let Ok(client) = NexusClient::new(&api_key) {
+            if let Ok(db) = SiloDatabase::open(&db_path) {
+                let (_, _, cache_matches) = load_cached_nexus_tier(&db, &api_key);
+                if !cache_matches {
+                    if let Ok(user) = rt_handle.block_on(client.validate_user()) {
+                        let _ = persist_nexus_validation(&db, &api_key, &user);
+                        snapshot.nexus_is_premium = user.is_premium;
+                        snapshot.nexus_account_name = Some(user.name);
+                    }
+                }
+            }
+
+            if !snapshot.all_vault_mods.is_empty() {
                 let updates =
                     rt_handle.block_on(client.check_mod_updates(&snapshot.all_vault_mods));
                 if !updates.is_empty() && status_override.is_none() {
@@ -569,7 +590,55 @@ pub fn import_folder_blocking(
     )
 }
 
+fn load_cached_nexus_tier(db: &SiloDatabase, resolved_key: &str) -> (bool, Option<String>, bool) {
+    let trimmed = resolved_key.trim();
+    let matches = db
+        .get_setting("nexus_validated_key")
+        .ok()
+        .flatten()
+        .is_some_and(|saved| !saved.trim().is_empty() && saved.trim() == trimmed);
+    if !matches {
+        return (false, None, false);
+    }
+
+    let is_premium = db
+        .get_setting("nexus_is_premium")
+        .ok()
+        .flatten()
+        .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1");
+    let account_name = db
+        .get_setting("nexus_account_name")
+        .ok()
+        .flatten()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    (is_premium, account_name, true)
+}
+
+fn persist_nexus_validation(
+    db: &SiloDatabase,
+    api_key: &str,
+    user: &NexusUserValidation,
+) -> Result<()> {
+    db.set_setting("nexus_validated_key", api_key.trim())?;
+    db.set_setting(
+        "nexus_is_premium",
+        if user.is_premium { "true" } else { "false" },
+    )?;
+    db.set_setting("nexus_account_name", user.name.trim())?;
+    Ok(())
+}
+
+fn clear_nexus_validation_cache(db: &SiloDatabase) -> Result<()> {
+    db.set_setting("nexus_validated_key", "")?;
+    db.set_setting("nexus_is_premium", "false")?;
+    db.set_setting("nexus_account_name", "")?;
+    Ok(())
+}
+
 pub fn save_nexus_api_key_blocking(
+    rt_handle: Handle,
     game_path: Option<PathBuf>,
     selected_profile_id: Option<i64>,
     api_key: String,
@@ -577,12 +646,70 @@ pub fn save_nexus_api_key_blocking(
     let trimmed = api_key.trim();
     let db_path = silo_db_path().context("Could not resolve ~/.silo/silo.db")?;
     let db = SiloDatabase::open(&db_path)?;
-    db.set_setting("nexus_api_key", trimmed)?;
 
     let status = if trimmed.is_empty() {
-        "Cleared Nexus Mods API key from ~/.silo/silo.db".to_string()
+        db.set_setting("nexus_api_key", "")?;
+        let _ = clear_nexus_validation_cache(&db);
+        "Cleared Nexus Mods API key".to_string()
     } else {
-        "Saved Nexus Mods API key to ~/.silo/silo.db".to_string()
+        let client = NexusClient::new(trimmed)?;
+        match rt_handle.block_on(client.validate_user()) {
+            Ok(user) => {
+                db.set_setting("nexus_api_key", trimmed)?;
+                persist_nexus_validation(&db, trimmed, &user)?;
+                if user.is_premium {
+                    format!(
+                        "Saved Premium Nexus Mods API key for {} — direct 1-click installs & nxm:// enabled",
+                        user.name
+                    )
+                } else {
+                    format!(
+                        "Saved Free-tier Nexus Mods API key for {} — nxm:// & update checks enabled (direct 1-click install requires Nexus Premium)",
+                        user.name
+                    )
+                }
+            }
+            Err(SiloError::NexusApi(msg)) => {
+                anyhow::bail!("Nexus Mods rejected API key ({msg}). Please check your Personal API Key.");
+            }
+            Err(SiloError::Http(err)) => {
+                db.set_setting("nexus_api_key", trimmed)?;
+                let _ = clear_nexus_validation_cache(&db);
+                format!(
+                    "Saved Nexus Mods API key (offline: could not check Premium status: {err})"
+                )
+            }
+            Err(err) => return Err(err.into()),
+        }
+    };
+
+    load_snapshot_blocking(game_path, selected_profile_id, Some(status))
+}
+
+pub fn verify_nexus_api_key_blocking(
+    rt_handle: Handle,
+    game_path: Option<PathBuf>,
+    selected_profile_id: Option<i64>,
+) -> Result<SiloSnapshot> {
+    let db_path = silo_db_path().context("Could not resolve ~/.silo/silo.db")?;
+    let api_key = resolve_nexus_api_key(&db_path)
+        .context("No Nexus Mods API key configured to verify.")?;
+    let client = NexusClient::new(&api_key)?;
+    let db = SiloDatabase::open(&db_path)?;
+
+    let user = rt_handle.block_on(client.validate_user())?;
+    persist_nexus_validation(&db, &api_key, &user)?;
+
+    let status = if user.is_premium {
+        format!(
+            "Verified Nexus Mods Premium account '{}' — direct 1-click installs enabled",
+            user.name
+        )
+    } else {
+        format!(
+            "Verified Free-tier Nexus Mods account '{}' — nxm:// & update checks enabled (direct 1-click install requires Nexus Premium)",
+            user.name
+        )
     };
 
     load_snapshot_blocking(game_path, selected_profile_id, Some(status))
@@ -685,12 +812,24 @@ pub fn install_discovered_mod_blocking(
     let vault_dir = silo_vault_dir().context("Could not resolve ~/.silo/vault")?;
 
     let api_key = resolve_nexus_api_key(&db_path).context(
-        "Nexus Mods API key not configured. Click 'Paste API Key' in the toolbar or use 'Nexus Page ↗' -> 'Mod Manager Download'.",
+        "Direct 1-click install requires a Nexus Mods Premium API key. Use 'Open on Nexus ↗' + 'Manual Download' -> 'Import Archive', or add a free key in Settings for 'Mod Manager Download' (nxm://).",
     )?;
 
     let client = NexusClient::new(&api_key)?;
     let vault = VaultManager::new(vault_dir)?;
     let db = SiloDatabase::open(&db_path)?;
+
+    let (mut is_premium, _, cache_matches) = load_cached_nexus_tier(&db, &api_key);
+    if !cache_matches {
+        let user = rt_handle.block_on(client.validate_user())?;
+        let _ = persist_nexus_validation(&db, &api_key, &user);
+        is_premium = user.is_premium;
+    }
+    if !is_premium {
+        anyhow::bail!(
+            "Direct 1-click install to Vault requires Nexus Mods Premium (your API key is Free tier). Use 'Add via Nexus (nxm://) ↗' to install via the web page."
+        );
+    }
 
     let label_name = mod_display_name.clone();
     let imported = rt_handle.block_on(client.download_latest_main_file(

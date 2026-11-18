@@ -135,18 +135,23 @@ pub(crate) fn show(app: &mut SiloApp, ui: &mut Ui, ctx: &egui::Context) {
                         .installed_vault_mod(item)
                         .map(|model| model.version.clone());
                     let has_api_key = app.snapshot.has_nexus_api_key;
+                    let can_direct_install = has_api_key && app.snapshot.nexus_is_premium;
                     let cover_uri = item.cached_cover_path.as_deref().map(file_uri);
 
                     let install_label = if installed.is_some() {
-                        if has_api_key {
+                        if can_direct_install {
                             "Reinstall / Update"
-                        } else {
+                        } else if has_api_key {
                             "Get Update (nxm://) ↗"
+                        } else {
+                            "Get Update on Nexus ↗"
                         }
-                    } else if has_api_key {
+                    } else if can_direct_install {
                         "Install to Vault"
-                    } else {
+                    } else if has_api_key {
                         "Add via Nexus (nxm://) ↗"
+                    } else {
+                        "Open on Nexus ↗"
                     };
 
                     ui.horizontal(|ui| {

@@ -12,7 +12,7 @@ use crate::state::{
     import_archives_blocking, import_folder_blocking, install_discovered_mod_blocking,
     load_snapshot_blocking, refresh_discovery_feed_blocking, rename_profile_blocking,
     save_dark_mode_blocking, save_nexus_api_key_blocking, toggle_mod_blocking,
-    toggle_strict_lock_blocking,
+    toggle_strict_lock_blocking, verify_nexus_api_key_blocking,
 };
 use crate::theme::{self, Palette};
 
@@ -359,11 +359,29 @@ impl SiloApp {
         let key_to_save = self.api_key_input.trim().to_string();
         self.api_key_input = key_to_save.clone();
         self.api_key_paste_pending = false;
+        let rt_handle = self.rt.handle().clone();
         let game_path = self.snapshot.game_install_path.clone();
         let selected_profile_id = self.snapshot.selected_profile_id;
         self.spawn_job(
-            "Saving Nexus Mods API key...",
-            move || save_nexus_api_key_blocking(game_path, selected_profile_id, key_to_save),
+            if key_to_save.is_empty() {
+                "Clearing Nexus Mods API key..."
+            } else {
+                "Saving & verifying Nexus Mods API key..."
+            },
+            move || {
+                save_nexus_api_key_blocking(rt_handle, game_path, selected_profile_id, key_to_save)
+            },
+            ctx,
+        );
+    }
+
+    pub(crate) fn verify_nexus_api_key(&mut self, ctx: &egui::Context) {
+        let rt_handle = self.rt.handle().clone();
+        let game_path = self.snapshot.game_install_path.clone();
+        let selected_profile_id = self.snapshot.selected_profile_id;
+        self.spawn_job(
+            "Checking Nexus Mods account tier...",
+            move || verify_nexus_api_key_blocking(rt_handle, game_path, selected_profile_id),
             ctx,
         );
     }
@@ -526,11 +544,17 @@ impl SiloApp {
         nexus_files_url: String,
         ctx: &egui::Context,
     ) {
-        if !self.snapshot.has_nexus_api_key {
+        if !(self.snapshot.has_nexus_api_key && self.snapshot.nexus_is_premium) {
             open_external(ctx, nexus_files_url);
-            self.snapshot.status_message = format!(
-                "Opened {mod_display_name} on Nexus Mods — click 'Mod Manager Download' (nxm:// is auto-bound) or set your API Key for 1-click in-app install"
-            );
+            self.snapshot.status_message = if self.snapshot.has_nexus_api_key {
+                format!(
+                    "Opened {mod_display_name} on Nexus Mods — click 'Mod Manager Download' (nxm://) to install to Vault (direct 1-click without browser requires Nexus Premium)."
+                )
+            } else {
+                format!(
+                    "Opened {mod_display_name} on Nexus Mods — click 'Manual Download' then 'Import Archive' in Silo (no API key needed), or add a free API Key in Settings for 'Mod Manager Download' (nxm://)."
+                )
+            };
             ctx.request_repaint();
             return;
         }
